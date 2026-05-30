@@ -18,7 +18,6 @@ import {
   redactUrl,
   truncateForLog,
 } from "./debug.function";
-import { CHUNK_POLL_INTERVAL_MS } from "../chat-constants";
 import { getResponseSettings, RESPONSE_LENGTHS, LANGUAGES } from "@/lib";
 import { MARKDOWN_FORMATTING_INSTRUCTIONS } from "@/config/constants";
 
@@ -89,24 +88,38 @@ async function* fetchPluelyAIResponse(params: {
       imageBase64 = imagesBase64.length === 1 ? imagesBase64[0] : imagesBase64;
     }
 
-    // Set up streaming event listener
+    // Set up streaming via an async queue so chunks yield the instant they
+    // arrive, instead of polling on a timer. A parked promise is resolved by
+    // the listen callbacks the moment a chunk lands or the stream completes.
+    const queue: string[] = [];
     let streamComplete = false;
-    const streamChunks: string[] = [];
+    let notify: (() => void) | null = null;
+
+    // Wake the generator if it's currently parked waiting for the next event.
+    const wake = () => {
+      if (notify) {
+        const resolve = notify;
+        notify = null;
+        resolve();
+      }
+    };
 
     const unlisten = await listen("chat_stream_chunk", (event) => {
-      const chunk = event.payload as string;
-      streamChunks.push(chunk);
+      queue.push(event.payload as string);
+      wake();
     });
 
     const unlistenComplete = await listen("chat_stream_complete", () => {
       streamComplete = true;
+      wake();
     });
+
+    const onAbort = () => wake();
+    signal?.addEventListener("abort", onAbort);
 
     try {
       // Check if aborted before starting invoke
       if (signal?.aborted) {
-        unlisten();
-        unlistenComplete();
         return;
       }
 
@@ -125,49 +138,38 @@ async function* fetchPluelyAIResponse(params: {
         history: historyString,
       });
 
-      // Yield chunks as they come in
-      let lastIndex = 0;
-      while (!streamComplete) {
-        // Check if aborted during streaming
+      // Yield chunks as they arrive. Completion only breaks the loop once the
+      // queue has been fully drained, so trailing chunks are never dropped.
+      const debugChunks: string[] = [];
+      while (true) {
         if (signal?.aborted) {
-          unlisten();
-          unlistenComplete();
           return;
         }
 
-        // Wait a bit for chunks to accumulate
-        await new Promise((resolve) =>
-          setTimeout(resolve, CHUNK_POLL_INTERVAL_MS)
-        );
-
-        // Check again after timeout
-        if (signal?.aborted) {
-          unlisten();
-          unlistenComplete();
-          return;
+        if (queue.length > 0) {
+          const chunk = queue.shift() as string;
+          if (isDebugEnabled()) debugChunks.push(chunk);
+          yield chunk;
+          continue;
         }
 
-        // Yield any new chunks
-        for (let i = lastIndex; i < streamChunks.length; i++) {
-          yield streamChunks[i];
+        if (streamComplete) {
+          break;
         }
-        lastIndex = streamChunks.length;
+
+        // Park until a chunk lands, the stream completes, or we abort.
+        await new Promise<void>((resolve) => {
+          notify = resolve;
+          // Guard against a state change between the checks above and parking.
+          if (queue.length > 0 || streamComplete || signal?.aborted) {
+            wake();
+          }
+        });
       }
 
-      // Final abort check before yielding remaining chunks
-      if (signal?.aborted) {
-        unlisten();
-        unlistenComplete();
-        return;
-      }
-
-      // Yield any remaining chunks
-      for (let i = lastIndex; i < streamChunks.length; i++) {
-        yield streamChunks[i];
-      }
-
-      debugLog("[Pluely ◀ done] full response:", streamChunks.join(""));
+      debugLog("[Pluely ◀ done] full response:", debugChunks.join(""));
     } finally {
+      signal?.removeEventListener("abort", onAbort);
       unlisten();
       unlistenComplete();
     }
