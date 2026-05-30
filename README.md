@@ -217,8 +217,8 @@ Manage cursor visibility and customize keyboard shortcuts:
 **Keyboard Shortcuts:** Customize all global keyboard shortcuts:
 
 - **Toggle Dashboard:** Open or close the dashboard window (Default: `Cmd+Shift+D` / `Ctrl+Shift+D`)
-- **Toggle Window:** Show or hide the main overlay window (Default: `Cmd+\` / `Ctrl+\`)
-- **Refocus Input Box:** Bring Pluely forward and focus the input area (Default: `Cmd+Shift+I` / `Ctrl+Shift+I`)
+- **Toggle Window:** Show or hide the main overlay window (Default: `Cmd+\` / `Ctrl+Shift+I`)
+- **Refocus Input Box:** Bring Pluely forward and focus the input area (Default: `Cmd+Shift+I` / `Ctrl+H`)
 - **Move Window:** Hold modifier key and use arrow keys to move the overlay window continuously (Default: `Cmd` / `Ctrl`)
 - **System Audio:** Toggle system audio capture on or off (Default: `Cmd+Shift+M` / `Ctrl+Shift+M`)
 - **Voice Input:** Start voice recording for speech-to-text (Default: `Cmd+Shift+A` / `Ctrl+Shift+A`)

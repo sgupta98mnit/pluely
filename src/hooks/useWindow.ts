@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 // Helper function to check if any popover is open in the DOM
 const isAnyPopoverOpen = (): boolean => {
@@ -91,11 +91,36 @@ export const useWindowFocus = ({
   onFocusLost,
   onFocusGained,
 }: UseWindowFocusOptions = {}) => {
+  const suppressFocusLossUntilRef = useRef(0);
+
+  useEffect(() => {
+    const isWindows = navigator.userAgent.toLowerCase().includes("windows");
+    if (!isWindows) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Ctrl+Shift+I can cause a transient blur event on Windows while refocusing input.
+      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "i") {
+        suppressFocusLossUntilRef.current = Date.now() + 500;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, []);
+
   const handleFocusChange = useCallback(
     async (focused: boolean) => {
       if (focused && onFocusGained) {
         onFocusGained();
       } else if (!focused && onFocusLost) {
+        const isWindows = navigator.userAgent.toLowerCase().includes("windows");
+        if (isWindows && Date.now() <= suppressFocusLossUntilRef.current) {
+          return;
+        }
         onFocusLost();
       }
     },

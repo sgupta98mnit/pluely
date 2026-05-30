@@ -797,7 +797,7 @@ export const useCompletion = () => {
     }
   }, [state.response, keepEngaged]);
 
-  // Keyboard arrow key support for scrolling
+    // Keyboard arrow key support for scrolling
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!isPopoverOpen) return;
@@ -845,6 +845,82 @@ export const useCompletion = () => {
     return () => window.removeEventListener("keydown", handleToggleShortcut);
   }, [isPopoverOpen]);
 
+  const generateQuestionAndSubmit = useCallback(
+    async (base64: string) => {
+      const usePluelyAPI = await shouldUsePluelyAPI();
+      // Check if AI provider is configured
+      if (!selectedAIProvider.provider && !usePluelyAPI) {
+        setState((prev) => ({
+          ...prev,
+          error: "Please select an AI provider in settings",
+        }));
+        return;
+      }
+
+      const provider = allAiProviders.find(
+        (p) => p.id === selectedAIProvider.provider
+      );
+      if (!provider && !usePluelyAPI) {
+        setState((prev) => ({
+          ...prev,
+          error: "Invalid provider selected",
+        }));
+        return;
+      }
+
+      // 1. Generate Question
+      setState((prev) => ({
+        ...prev,
+        isLoading: true,
+        error: null,
+        response: "", // Clear previous response
+        input: "Thinking of a question...", // Temporary status
+      }));
+
+      // Create a temporary signal for this generation
+      const generationController = new AbortController();
+      const signal = generationController.signal;
+
+      let generatedQuestion = "";
+      try {
+        for await (const chunk of fetchAIResponse({
+          provider: usePluelyAPI ? undefined : provider,
+          selectedProvider: selectedAIProvider,
+          systemPrompt:
+            "You are an expert troubleshooter. Analyze the image provided. Identify the core problem, error, or subject matter. Generate a single, concise, one-sentence question that asking for a solution or explanation. For example: 'How do I fix this syntax error?', 'Explain the data trend in this chart', 'What is the solution to this math problem?'. Output ONLY the question.",
+          history: [],
+          userMessage: "Generate a question for this image.",
+          imagesBase64: [base64],
+          signal,
+        })) {
+          if (signal.aborted) break;
+          generatedQuestion += chunk;
+        }
+      } catch (e: any) {
+        console.error("Failed to generate question:", e);
+        // Fallback to auto prompt if generation fails
+        generatedQuestion = screenshotConfiguration.autoPrompt;
+      }
+
+      generatedQuestion = generatedQuestion.trim();
+      if (!generatedQuestion) {
+        generatedQuestion = screenshotConfiguration.autoPrompt;
+      }
+
+      // Clean up quotes if present
+      generatedQuestion = generatedQuestion.replace(/^["']|["']$/g, "");
+
+      // 2. Submit with generated question
+      await handleScreenshotSubmit(base64, generatedQuestion);
+    },
+    [
+      allAiProviders,
+      selectedAIProvider,
+      handleScreenshotSubmit,
+      screenshotConfiguration.autoPrompt,
+    ]
+  );
+
   const captureScreenshot = useCallback(async () => {
     if (!handleScreenshotSubmit) return;
 
@@ -889,13 +965,10 @@ export const useCompletion = () => {
       if (config.enabled) {
         const base64 = await invoke("capture_to_base64");
 
-        if (config.mode === "auto") {
-          // Auto mode: Submit directly to AI with the configured prompt
-          await handleScreenshotSubmit(base64 as string, config.autoPrompt);
-        } else if (config.mode === "manual") {
-          // Manual mode: Add to attached files without prompt
-          await handleScreenshotSubmit(base64 as string);
-        }
+        // Ask AI button (screenshot mode) -> Generate Question -> Submit
+        // We Override the "mode" config here because "Ask AI" implies we want an answer.
+        await generateQuestionAndSubmit(base64 as string);
+
         screenshotInitiatedByThisContext.current = false;
       } else {
         // Selection Mode: Open overlay to select an area
@@ -914,7 +987,7 @@ export const useCompletion = () => {
         setIsScreenshotLoading(false);
       }
     }
-  }, [handleScreenshotSubmit]);
+  }, [handleScreenshotSubmit, generateQuestionAndSubmit]);
 
   useEffect(() => {
     let unlisten: any;
@@ -931,16 +1004,10 @@ export const useCompletion = () => {
 
         isProcessingScreenshotRef.current = true;
         const base64 = event.payload;
-        const config = screenshotConfigRef.current;
 
         try {
-          if (config.mode === "auto") {
-            // Auto mode: Submit directly to AI with the configured prompt
-            await handleScreenshotSubmit(base64 as string, config.autoPrompt);
-          } else if (config.mode === "manual") {
-            // Manual mode: Add to attached files without prompt
-            await handleScreenshotSubmit(base64 as string);
-          }
+          // Selection Mode -> Generate Question -> Submit
+          await generateQuestionAndSubmit(base64 as string);
         } catch (error) {
           console.error("Error processing selection:", error);
         } finally {
@@ -960,7 +1027,7 @@ export const useCompletion = () => {
         unlisten();
       }
     };
-  }, [handleScreenshotSubmit]);
+  }, [handleScreenshotSubmit, generateQuestionAndSubmit]);
 
   useEffect(() => {
     const unlisten = listen("capture-closed", () => {
@@ -1048,3 +1115,4 @@ export const useCompletion = () => {
     setKeepEngaged,
   };
 };
+

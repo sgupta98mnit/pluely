@@ -17,8 +17,8 @@ export const DEFAULT_SHORTCUT_ACTIONS: ShortcutAction[] = [
     description: "Show/Hide the main window",
     defaultKey: {
       macos: "cmd+backslash",
-      windows: "ctrl+backslash",
-      linux: "ctrl+backslash",
+      windows: "ctrl+shift+i",
+      linux: "ctrl+shift+i",
     },
   },
   {
@@ -27,8 +27,8 @@ export const DEFAULT_SHORTCUT_ACTIONS: ShortcutAction[] = [
     description: "Bring Pluely forward and place the cursor in the input area",
     defaultKey: {
       macos: "cmd+shift+i",
-      windows: "ctrl+shift+i",
-      linux: "ctrl+shift+i",
+      windows: "ctrl+h",
+      linux: "ctrl+h",
     },
   },
   {

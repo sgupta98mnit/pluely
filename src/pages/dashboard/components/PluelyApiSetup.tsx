@@ -58,6 +58,7 @@ export const PluelyApiSetup = () => {
     setHasActiveLicense,
     getActiveLicenseStatus,
     setSupportsImages,
+    selectedAIProvider,
   } = useApp();
 
   const [licenseKey, setLicenseKey] = useState("");
@@ -116,8 +117,9 @@ export const PluelyApiSetup = () => {
         });
         setMaskedLicenseKey(masked);
       } else {
-        setStoredLicenseKey(null);
-        setMaskedLicenseKey(null);
+        // Use local license for free mode
+        setStoredLicenseKey("local");
+        setMaskedLicenseKey("Local License (Free)");
       }
 
       if (storage.selected_pluely_model) {
@@ -133,9 +135,9 @@ export const PluelyApiSetup = () => {
       }
     } catch (err) {
       console.error("Failed to load license status:", err);
-      // If we can't read from storage, assume no license is stored
-      setStoredLicenseKey(null);
-      setMaskedLicenseKey(null);
+      // Fallback to local
+      setStoredLicenseKey("local");
+      setMaskedLicenseKey("Local License (Free)");
       setSelectedModel(null);
     }
   };
@@ -320,14 +322,18 @@ export const PluelyApiSetup = () => {
         >
           <PopoverTrigger
             asChild
-            disabled={isModelsLoading}
+            disabled={isModelsLoading || !pluelyApiEnabled}
             className="cursor-pointer flex justify-start"
           >
             <Button
               variant="outline"
               className="h-11 text-start shadow-none w-full"
             >
-              {selectedModel ? selectedModel.name : "Select pro models"}{" "}
+              {!pluelyApiEnabled
+                ? `Custom: ${selectedAIProvider.provider || "None Configured"}`
+                : selectedModel
+                ? selectedModel.name
+                : "Select pro models"}{" "}
               <ChevronDown />
             </Button>
           </PopoverTrigger>
@@ -388,7 +394,14 @@ export const PluelyApiSetup = () => {
           </PopoverContent>
         </Popover>
         {/* this model only supports these modalities */}
-        {selectedModel && (
+        {/* this model only supports these modalities */}
+        {!pluelyApiEnabled && (
+          <div className="text-xs text-blue-500 bg-blue-500/10 p-3 rounded-md">
+            You are using your custom AI settings from Dev Space. Enable Pluely
+            API to use standard models.
+          </div>
+        )}
+        {pluelyApiEnabled && selectedModel && (
           <div className="text-xs text-amber-500 bg-amber-500/10 p-3 rounded-md">
             {selectedModel.modality?.includes("image")
               ? "This model accepts both text and images as input and generates text responses."

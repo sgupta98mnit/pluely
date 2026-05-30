@@ -406,7 +406,39 @@ pub fn update_shortcuts<R: Runtime>(
             }
             Err(e) => {
                 eprintln!("Failed to register {} shortcut: {}", action_id, e);
-                registration_failures.push((action_id, shortcut_str, e.to_string()));
+                if e.to_string().contains("already registered") {
+                    match shortcut_str.parse::<Shortcut>() {
+                        Ok(parsed) => match app.global_shortcut().is_registered(parsed) {
+                            true => {
+                                eprintln!(
+                                    "Shortcut {} already registered and active, using existing registration",
+                                    shortcut_str
+                                );
+                                successfully_registered.insert(action_id, shortcut_str);
+                            }
+                            false => {
+                                registration_failures.push((
+                                    action_id,
+                                    shortcut_str,
+                                    "Shortcut reported as already registered, but is not active"
+                                        .to_string(),
+                                ));
+                            }
+                        },
+                        Err(parse_err) => {
+                            registration_failures.push((
+                                action_id,
+                                shortcut_str,
+                                format!(
+                                    "Shortcut reported as already registered, but could not re-parse key: {}",
+                                    parse_err
+                                ),
+                            ));
+                        }
+                    }
+                } else {
+                    registration_failures.push((action_id, shortcut_str, e.to_string()));
+                }
             }
         }
     }
@@ -460,12 +492,38 @@ fn unregister_all_shortcuts<R: Runtime>(app: &AppHandle<R>) -> Result<(), String
 
     for (action_id, shortcut_str) in registered.iter() {
         if let Ok(shortcut) = shortcut_str.parse::<Shortcut>() {
-            match app.global_shortcut().unregister(shortcut) {
-                Ok(_) => {
-                    eprintln!("Unregistered shortcut: {} -> {}", action_id, shortcut_str);
+            match app.global_shortcut().is_registered(shortcut) {
+                true => {
+                    match shortcut_str.parse::<Shortcut>() {
+                        Ok(shortcut_to_unregister) => {
+                            match app.global_shortcut().unregister(shortcut_to_unregister) {
+                                Ok(_) => {
+                                    eprintln!(
+                                        "Unregistered shortcut: {} -> {}",
+                                        action_id, shortcut_str
+                                    );
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "Failed to unregister shortcut {}: {}",
+                                        shortcut_str, e
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Failed to parse shortcut {} for unregister: {}",
+                                shortcut_str, e
+                            );
+                        }
+                    }
                 }
-                Err(e) => {
-                    eprintln!("Failed to unregister shortcut {}: {}", shortcut_str, e);
+                false => {
+                    eprintln!(
+                        "Skipping unregister for {} -> {} (not currently registered)",
+                        action_id, shortcut_str
+                    );
                 }
             }
         }
@@ -608,12 +666,20 @@ fn handle_toggle_dashboard<R: Runtime>(app: &AppHandle<R>) {
 /// Handle focus input shortcut
 fn handle_focus_input<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
+        #[cfg(target_os = "windows")]
+        let should_set_focus = !matches!(window.is_focused(), Ok(true));
+        #[cfg(not(target_os = "windows"))]
+        let should_set_focus = true;
+
         // Ensure window is visible
         if let Ok(false) = window.is_visible() {
             let _ = window.show();
         }
 
-        let _ = window.set_focus();
+        // Avoid forcing focus on Windows when already focused, which can emit a transient blur event.
+        if should_set_focus {
+            let _ = window.set_focus();
+        }
         let _ = window.emit("focus-text-input", json!({}));
     }
 }

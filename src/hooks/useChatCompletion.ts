@@ -11,7 +11,9 @@ import {
   generateMessageId,
   generateRequestId,
   getResponseSettings,
+  generateConversationId,
 } from "@/lib";
+
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -321,7 +323,7 @@ export const useChatCompletion = (
 
           // Get existing conversation if updating
           let existingConversation = null;
-          if (conversationId) {
+          if (conversationId && conversationId !== "new") {
             try {
               existingConversation = await getConversationById(conversationId);
             } catch (error) {
@@ -334,8 +336,13 @@ export const useChatCompletion = (
             messages?.title ||
             generateConversationTitle(input);
 
+          const finalConversationId =
+            conversationId && conversationId !== "new"
+              ? conversationId
+              : generateConversationId("chat");
+
           const conversation: ChatConversation = {
-            id: conversationId,
+            id: finalConversationId,
             title,
             messages: newMessages,
             createdAt:
@@ -350,8 +357,9 @@ export const useChatCompletion = (
 
             // Reload conversation from database to ensure consistency
             const updatedConversation = await getConversationById(
-              conversationId
+              finalConversationId
             );
+
             if (updatedConversation) {
               setMessages(updatedConversation);
             }

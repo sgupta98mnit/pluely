@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import moment from "moment";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { PageLayout } from "@/layouts";
 import { useHistory, useChatCompletion } from "@/hooks";
 import { useApp } from "@/contexts";
@@ -38,6 +38,7 @@ const View = () => {
   const { conversationId } = useParams();
   const { hasActiveLicense, supportsImages } = useApp();
   const navigate = useNavigate();
+  const location = useLocation();
   const [messages, setMessages] = useState<ChatConversation | null>(null);
 
   const {
@@ -59,6 +60,7 @@ const View = () => {
 
   useEffect(() => {
     const getMessages = async () => {
+      if (conversationId === "new") return;
       const conversation = await getConversationById(conversationId as string);
       setMessages(conversation || null);
     };
@@ -75,6 +77,23 @@ const View = () => {
       }, 100);
     }
   }, [messages?.messages.length]);
+
+  // Handle initial state from "Ask AI"
+  useEffect(() => {
+    if (conversationId === "new" && location.state?.capturedImage) {
+      const { capturedImage, autoPrompt, mode } = location.state;
+
+      if (completion.attachedFiles.length === 0 && !completion.isLoading) {
+        if (mode === "auto") {
+          completion.handleScreenshotSubmit(capturedImage, autoPrompt);
+        } else {
+          completion.handleScreenshotSubmit(capturedImage);
+        }
+        // Clear state to prevent re-triggering?
+        // window.history.replaceState({}, "");
+      }
+    }
+  }, [conversationId, location.state]);
 
   const handleDelete = async () => {
     await confirmDelete();

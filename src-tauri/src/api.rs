@@ -57,7 +57,7 @@ pub async fn get_stored_credentials(
     let storage_path = get_secure_storage_path(app)?;
 
     if !storage_path.exists() {
-        return Err("No license found. Please activate your license first.".to_string());
+        return Ok(("local".to_string(), "local".to_string(), None));
     }
 
     let content = fs::read_to_string(&storage_path)
@@ -66,12 +66,8 @@ pub async fn get_stored_credentials(
     let storage: SecureStorage = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse storage file: {}", e))?;
 
-    let license_key = storage
-        .license_key
-        .ok_or("License key not found".to_string())?;
-    let instance_id = storage
-        .instance_id
-        .ok_or("Instance ID not found".to_string())?;
+    let license_key = storage.license_key.unwrap_or_else(|| "local".to_string());
+    let instance_id = storage.instance_id.unwrap_or_else(|| "local".to_string());
 
     let selected_model: Option<Model> = storage
         .selected_pluely_model
@@ -295,6 +291,25 @@ async fn fetch_api_response_config(
     provider: Option<String>,
     model: Option<String>,
 ) -> Result<ApiResponseConfig, String> {
+    // Check for local Ollama provider
+    if let Some(p) = &provider {
+        if p == "Ollama" {
+            return Ok(ApiResponseConfig {
+                url: "http://localhost:11434/v1/chat/completions".to_string(),
+                user_token: "ollama".to_string(),
+                model: model.unwrap_or("llama3".to_string()),
+                body: "{}".to_string(),
+                customer_id: None,
+                customer_email: None,
+                customer_name: None,
+                license_key: "local".to_string(),
+                instance_id: "local".to_string(),
+                user_audio: None,
+                errors: None,
+            });
+        }
+    }
+
     // Get environment variables
     let app_endpoint = get_app_endpoint()?;
     let api_access_key = get_api_access_key()?;
@@ -383,8 +398,11 @@ fn map_api_error_message(error_rules: &[ApiConfigError], sources: &[String]) -> 
         .first()
         .map(|rule| rule.error.clone())
         .unwrap_or_else(|| {
-            "Something went wrong. Please try switching to a different model or contact support."
-                .to_string()
+            // Return the raw error if available for debugging
+            sources.first().cloned().unwrap_or_else(|| {
+                "Something went wrong. Please try switching to a different model or contact support."
+                    .to_string()
+            })
         })
 }
 
@@ -885,77 +903,124 @@ async fn report_api_error(
 // Models API Command
 #[tauri::command]
 pub async fn fetch_models(app: AppHandle) -> Result<Vec<Model>, String> {
-    // Get environment variables
-    let app_endpoint = get_app_endpoint()?;
-    let api_access_key = get_api_access_key()?;
+    // Define local models (Ollama)
+    let local_models = vec![
+        Model {
+            provider: "Ollama".to_string(),
+            name: "Llama 3 (Ollama)".to_string(),
+            id: "llama3".to_string(),
+            model: "llama3".to_string(),
+            description: "Meta Llama 3 locally via Ollama".to_string(),
+            modality: "text".to_string(),
+            is_available: true,
+        },
+        Model {
+            provider: "Ollama".to_string(),
+            name: "Mistral (Ollama)".to_string(),
+            id: "mistral".to_string(),
+            model: "mistral".to_string(),
+            description: "Mistral 7B locally via Ollama".to_string(),
+            modality: "text".to_string(),
+            is_available: true,
+        },
+        Model {
+            provider: "Ollama".to_string(),
+            name: "Gemma 2 (Ollama)".to_string(),
+            id: "gemma2".to_string(),
+            model: "gemma2".to_string(),
+            description: "Google Gemma 2 locally via Ollama".to_string(),
+            modality: "text".to_string(),
+            is_available: true,
+        },
+        Model {
+            provider: "Ollama".to_string(),
+            name: "Phi 3 (Ollama)".to_string(),
+            id: "phi3".to_string(),
+            model: "phi3".to_string(),
+            description: "Microsoft Phi 3 locally via Ollama".to_string(),
+            modality: "text".to_string(),
+            is_available: true,
+        },
+        Model {
+            provider: "Ollama".to_string(),
+            name: "DeepSeek v3.1 (Ollama)".to_string(),
+            id: "deepseek-v3.1:671b-cloud".to_string(),
+            model: "deepseek-v3.1:671b-cloud".to_string(),
+            description: "DeepSeek v3.1 locally via Ollama".to_string(),
+            modality: "text".to_string(),
+            is_available: true,
+        },
+        Model {
+            provider: "Ollama".to_string(),
+            name: "LLaVA (Ollama)".to_string(),
+            id: "llava".to_string(),
+            model: "llava".to_string(),
+            description: "LLaVA multimodal model locally via Ollama".to_string(),
+            modality: "text, image".to_string(),
+            is_available: true,
+        },
+        Model {
+            provider: "Ollama".to_string(),
+            name: "Qwen3-VL (Ollama)".to_string(),
+            id: "qwen3-vl".to_string(),
+            model: "qwen3-vl".to_string(),
+            description: "Qwen3 Vision Language model locally via Ollama".to_string(),
+            modality: "text, image".to_string(),
+            is_available: true,
+        },
+    ];
 
-    let (license_key, instance_id) = match get_stored_credentials(&app).await {
-        Ok((lk, id, _)) => (lk, id),
-        Err(_) => ("".to_string(), "".to_string()),
-    };
-    let machine_id = app
-        .machine_uid()
-        .get_machine_uid()
-        .ok()
-        .and_then(|uid| uid.id)
-        .unwrap_or_else(|| "".to_string());
-    let app_version = app.package_info().version.to_string();
+    // Try to get environment variables for remote fetch
+    let remote_models = match (get_app_endpoint(), get_api_access_key()) {
+        (Ok(app_endpoint), Ok(api_access_key)) => {
+            let (license_key, instance_id) = match get_stored_credentials(&app).await {
+                Ok((lk, id, _)) => (lk, id),
+                Err(_) => ("".to_string(), "".to_string()),
+            };
+            let machine_id = app
+                .machine_uid()
+                .get_machine_uid()
+                .ok()
+                .and_then(|uid| uid.id)
+                .unwrap_or_else(|| "".to_string());
+            let app_version = app.package_info().version.to_string();
 
-    // Make HTTP request to models endpoint
-    let client = reqwest::Client::new();
-    let url = format!("{}/api/models", app_endpoint);
+            // Make HTTP request to models endpoint
+            let client = reqwest::Client::new();
+            let url = format!("{}/api/models", app_endpoint);
 
-    let response = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", api_access_key))
-        .header("license_key", &license_key)
-        .header("instance", &instance_id)
-        .header("machine_id", &machine_id)
-        .header("app_version", &app_version)
-        .send()
-        .await
-        .map_err(|e| {
-            let error_msg = format!("{}", e);
-            if error_msg.contains("url (") {
-                // Remove the URL part from the error message
-                let parts: Vec<&str> = error_msg.split(" for url (").collect();
-                if parts.len() > 1 {
-                    format!("Failed to make models request: {}", parts[0])
-                } else {
-                    format!("Failed to make models request: {}", error_msg)
+            match client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Authorization", format!("Bearer {}", api_access_key))
+                .header("license_key", &license_key)
+                .header("instance", &instance_id)
+                .header("machine_id", &machine_id)
+                .header("app_version", &app_version)
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        match response.json::<ModelsResponse>().await {
+                            Ok(parsed) => parsed.models,
+                            Err(_) => vec![],
+                        }
+                    } else {
+                        vec![]
+                    }
                 }
-            } else {
-                format!("Failed to make models request: {}", error_msg)
-            }
-        })?;
-
-    // Check if the response is successful
-    if !response.status().is_success() {
-        let status = response.status();
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown server error".to_string());
-
-        // Try to parse error as JSON to get a more specific error message
-        if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&error_text) {
-            if let Some(error_msg) = error_json.get("error").and_then(|e| e.as_str()) {
-                return Err(format!("Server error ({}): {}", status, error_msg));
-            } else if let Some(message) = error_json.get("message").and_then(|m| m.as_str()) {
-                return Err(format!("Server error ({}): {}", status, message));
+                Err(_) => vec![],
             }
         }
+        _ => vec![], // Env vars missing, skip remote fetch
+    };
 
-        return Err(format!("Server error ({}): {}", status, error_text));
-    }
+    // Combine models
+    let mut all_models = remote_models;
+    all_models.extend(local_models);
 
-    let models_response: ModelsResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse models response: {}", e))?;
-
-    Ok(models_response.models)
+    Ok(all_models)
 }
 
 // Fetch Pluely Prompts API

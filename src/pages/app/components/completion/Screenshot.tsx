@@ -25,8 +25,8 @@ export const Screenshot = ({
 
   return (
     <Button
-      size="icon"
-      className="cursor-pointer"
+      size="default"
+      className="cursor-pointer bg-gradient-to-r from-primary to-purple-600 hover:from-primary/90 hover:to-purple-600/90 text-primary-foreground shadow-sm transition-all duration-300 hover:scale-[1.02] px-3"
       title={
         !supportsImages
           ? "Screenshot not supported by current AI provider"
@@ -37,11 +37,17 @@ export const Screenshot = ({
     >
       {isScreenshotLoading ? (
         <Loader2 className="h-4 w-4 animate-spin" />
-      ) : screenshotConfiguration.enabled ? (
-        <LaptopMinimalIcon className="h-4 w-4" />
       ) : (
-        <MousePointer2Icon className="h-4 w-4" />
+        <>
+          {screenshotConfiguration.enabled ? (
+            <LaptopMinimalIcon className="h-4 w-4 mr-2" />
+          ) : (
+            <MousePointer2Icon className="h-4 w-4 mr-2" />
+          )}
+          <span className="font-medium text-xs">Ask AI</span>
+        </>
       )}
     </Button>
   );
 };
+

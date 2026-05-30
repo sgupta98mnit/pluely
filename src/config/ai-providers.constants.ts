@@ -10,6 +10,14 @@ export const AI_PROVIDERS = [
   }'`,
     responseContentPath: "choices[0].message.content",
     streaming: true,
+    models: [
+      "gpt-4o",
+      "gpt-4o-mini",
+      "gpt-4.1",
+      "gpt-4.1-mini",
+      "o3",
+      "o4-mini",
+    ],
   },
   {
     id: "claude",
@@ -26,6 +34,16 @@ export const AI_PROVIDERS = [
   }'`,
     responseContentPath: "content[0].text",
     streaming: true,
+    models: [
+      "claude-opus-4-8",
+      "claude-sonnet-4-6",
+      "claude-haiku-4-5",
+      "claude-opus-4-7",
+      "claude-opus-4-6",
+      "claude-sonnet-4-5",
+      "claude-opus-4-5",
+      "claude-opus-4-1",
+    ],
   },
   {
     id: "grok",
@@ -38,6 +56,7 @@ export const AI_PROVIDERS = [
   }'`,
     responseContentPath: "choices[0].message.content",
     streaming: true,
+    models: ["grok-4", "grok-3", "grok-3-mini", "grok-2-vision-1212"],
   },
   {
     id: "gemini",
@@ -50,6 +69,7 @@ export const AI_PROVIDERS = [
   }'}`,
     responseContentPath: "choices[0].message.content",
     streaming: true,
+    models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
   },
   {
     id: "mistral",
@@ -62,6 +82,11 @@ export const AI_PROVIDERS = [
   }'`,
     responseContentPath: "choices[0].message.content",
     streaming: true,
+    models: [
+      "mistral-large-latest",
+      "mistral-small-latest",
+      "pixtral-large-latest",
+    ],
   },
   {
     id: "cohere",
@@ -75,6 +100,7 @@ export const AI_PROVIDERS = [
     }'`,
     responseContentPath: "message.content[0].text",
     streaming: true,
+    models: ["command-a-03-2025", "command-r-plus", "command-r"],
   },
   {
     id: "groq",
@@ -93,6 +119,11 @@ export const AI_PROVIDERS = [
     }'`,
     responseContentPath: "choices[0].message.content",
     streaming: true,
+    models: [
+      "llama-3.3-70b-versatile",
+      "llama-3.1-8b-instant",
+      "gemma2-9b-it",
+    ],
   },
   {
     id: "perplexity",
@@ -105,6 +136,7 @@ export const AI_PROVIDERS = [
   }'`,
     responseContentPath: "choices[0].message.content",
     streaming: true,
+    models: ["sonar", "sonar-pro", "sonar-reasoning"],
   },
   {
     id: "openrouter",

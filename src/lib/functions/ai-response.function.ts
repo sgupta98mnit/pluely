@@ -11,6 +11,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import curl2Json from "@bany/curl-to-json";
 import { shouldUsePluelyAPI } from "./pluely.api";
+import {
+  debugLog,
+  isDebugEnabled,
+  redactHeaders,
+  redactUrl,
+  truncateForLog,
+} from "./debug.function";
 import { CHUNK_POLL_INTERVAL_MS } from "../chat-constants";
 import { getResponseSettings, RESPONSE_LENGTHS, LANGUAGES } from "@/lib";
 import { MARKDOWN_FORMATTING_INSTRUCTIONS } from "@/config/constants";
@@ -103,6 +110,13 @@ async function* fetchPluelyAIResponse(params: {
         return;
       }
 
+      debugLog("[Pluely ▶ request] chat_stream_response", {
+        userMessage,
+        systemPrompt,
+        hasImage: imageBase64 !== undefined,
+        historyMessages: history.length,
+      });
+
       // Start the streaming request using the new API response endpoint
       await invoke("chat_stream_response", {
         userMessage,
@@ -151,6 +165,8 @@ async function* fetchPluelyAIResponse(params: {
       for (let i = lastIndex; i < streamChunks.length; i++) {
         yield streamChunks[i];
       }
+
+      debugLog("[Pluely ◀ done] full response:", streamChunks.join(""));
     } finally {
       unlisten();
       unlistenComplete();
@@ -293,6 +309,16 @@ export async function* fetchAIResponse(params: {
 
     const fetchFunction = url?.includes("http") ? fetch : tauriFetch;
 
+    debugLog(
+      `[AI ▶ request] ${provider?.id ?? "custom"} ${
+        curlJson.method || "POST"
+      } ${redactUrl(url)}`,
+      {
+        headers: redactHeaders(headers),
+        body: truncateForLog(bodyObj),
+      }
+    );
+
     let response;
     try {
       response = await fetchFunction(url, {
@@ -315,11 +341,16 @@ export async function* fetchAIResponse(params: {
       return;
     }
 
+    debugLog(
+      `[AI ◀ status] ${response.status} ${response.statusText} ok=${response.ok}`
+    );
+
     if (!response.ok) {
       let errorText = "";
       try {
         errorText = await response.text();
       } catch {}
+      debugLog("[AI ◀ error body]", errorText);
       yield `API request failed: ${response.status} ${response.statusText}${
         errorText ? ` - ${errorText}` : ""
       }`;
@@ -336,8 +367,10 @@ export async function* fetchAIResponse(params: {
         }`;
         return;
       }
+      debugLog("[AI ◀ response (non-stream)]", truncateForLog(json));
       const content =
         getByPath(json, provider?.responseContentPath || "") || "";
+      debugLog("[AI ◀ extracted content]", content);
       yield content;
       return;
     }
@@ -350,6 +383,7 @@ export async function* fetchAIResponse(params: {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let debugFull = "";
 
     while (true) {
       // Check if aborted
@@ -375,7 +409,10 @@ export async function* fetchAIResponse(params: {
         return;
       }
       const { done, value } = readResult;
-      if (done) break;
+      if (done) {
+        debugLog("[AI ◀ done] full response:", debugFull);
+        break;
+      }
 
       // Check if aborted before processing
       if (signal?.aborted) {
@@ -398,6 +435,7 @@ export async function* fetchAIResponse(params: {
               provider?.responseContentPath || ""
             );
             if (delta) {
+              if (isDebugEnabled()) debugFull += delta;
               yield delta;
             }
           } catch (e) {

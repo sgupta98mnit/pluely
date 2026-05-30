@@ -53,10 +53,36 @@ export const getShortcutsConfig = (): ShortcutsConfig => {
       const parsed = JSON.parse(stored);
       // Merge with defaults to ensure all default actions are present
       const defaults = getDefaultShortcutsConfig();
-      return {
+      const mergedConfig = {
         bindings: { ...defaults.bindings, ...parsed.bindings },
         customActions: parsed.customActions || [],
       };
+
+      const platform = getPlatform();
+      const isWindowsOrLinux = platform === "windows" || platform === "linux";
+      const toggleWindowKey = mergedConfig.bindings.toggle_window?.key?.toLowerCase();
+      const focusInputKey = mergedConfig.bindings.focus_input?.key?.toLowerCase();
+
+      // Migrate legacy default mapping:
+      // toggle_window: ctrl+backslash (or older ctrl+h), focus_input: ctrl+shift+i
+      // -> toggle_window: ctrl+shift+i, focus_input: ctrl+h
+      if (
+        isWindowsOrLinux &&
+        (toggleWindowKey === "ctrl+backslash" || toggleWindowKey === "ctrl+h") &&
+        focusInputKey === "ctrl+shift+i"
+      ) {
+        mergedConfig.bindings.toggle_window = {
+          ...mergedConfig.bindings.toggle_window,
+          key: "ctrl+shift+i",
+        };
+        mergedConfig.bindings.focus_input = {
+          ...mergedConfig.bindings.focus_input,
+          key: "ctrl+h",
+        };
+        setShortcutsConfig(mergedConfig);
+      }
+
+      return mergedConfig;
     }
     return getDefaultShortcutsConfig();
   } catch (error) {

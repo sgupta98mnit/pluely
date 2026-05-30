@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { safeLocalStorage } from "../storage";
 import { STORAGE_KEYS } from "@/config";
 
@@ -11,8 +10,8 @@ export async function shouldUsePluelyAPI(): Promise<boolean> {
     if (!pluelyApiEnabled) return false;
 
     // Check if license is available
-    const hasLicense = await invoke<boolean>("check_license_status");
-    return hasLicense;
+    // const hasLicense = await invoke<boolean>("check_license_status");
+    return true;
   } catch (error) {
     console.warn("Failed to check Pluely API availability:", error);
     return false;

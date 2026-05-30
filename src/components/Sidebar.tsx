@@ -1,9 +1,9 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { useMenuItems, useVersion } from "@/hooks";
 import { SparklesIcon } from "lucide-react";
 import { Button } from "@/components";
 import { cn } from "@/lib/utils";
 import { useLocation, useNavigate } from "react-router-dom";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { useMenuItems, useVersion } from "@/hooks";
 
 export const Sidebar = () => {
   const { version, isLoading } = useVersion();
@@ -11,6 +11,7 @@ export const Sidebar = () => {
 
   const navigate = useNavigate();
   const activeRoute = useLocation().pathname;
+
   return (
     <aside className="flex w-56 flex-col select-none pt-2">
       {/* Logo */}

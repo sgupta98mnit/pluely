@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { TYPE_PROVIDER } from "@/types";
 import curl2Json from "@bany/curl-to-json";
 import { shouldUsePluelyAPI } from "./pluely.api";
+import { debugLog, redactHeaders, redactUrl } from "./debug.function";
 
 // Pluely STT function
 async function fetchPluelySTT(audio: File | Blob): Promise<string> {
@@ -187,6 +188,17 @@ export async function fetchSTT(params: STTParams): Promise<string> {
 
     const fetchFunction = url?.includes("http") ? fetch : tauriFetch;
 
+    debugLog(
+      `[STT ▶ request] ${provider.id ?? "custom"} ${
+        curlJson.method || "POST"
+      } ${redactUrl(url)}`,
+      {
+        headers: redactHeaders(finalHeaders),
+        mode: isForm ? "form" : isBinaryUpload ? "binary" : "json",
+        audio: { size: file.size, type: audio.type },
+      }
+    );
+
     // Send request
     let response: Response;
     try {
@@ -198,6 +210,10 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     } catch (e) {
       throw new Error(`Network error: ${e instanceof Error ? e.message : e}`);
     }
+
+    debugLog(
+      `[STT ◀ status] ${response.status} ${response.statusText} ok=${response.ok}`
+    );
 
     if (!response.ok) {
       let errText = "";
@@ -226,6 +242,8 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     const rawPath = provider.responseContentPath || "text";
     const path = rawPath.charAt(0).toLowerCase() + rawPath.slice(1);
     const transcription = (getByPath(data, path) || "").trim();
+
+    debugLog("[STT ◀ transcription]", transcription || "(empty)");
 
     if (!transcription) {
       return [...warnings, "No transcription found"].join("; ");
