@@ -227,32 +227,37 @@ export const useChatCompletion = (
         let fullResponse = "";
 
         try {
-          // Assistant message is mutated in place as tokens stream in, so we
-          // never rebuild the whole messages array (O(n)) on every token.
+          // Reused array whose trailing assistant entry is swapped for a fresh
+          // object on each flush (O(1), no per-token array rebuild). A new
+          // object — rather than an in-place content mutation — is required so
+          // the memoized message row in View.tsx detects the content change;
+          // the other (unchanged) message objects keep their references so
+          // those rows skip re-rendering.
           const assistantTimestamp = timestamp + MESSAGE_ID_OFFSET;
-          const streamingAssistantMsg: ChatMessage = {
-            id: generateMessageId("assistant", assistantTimestamp),
-            role: "assistant",
-            content: "",
-            timestamp: assistantTimestamp,
-          };
-          const streamingMessages = [
+          const assistantId = generateMessageId("assistant", assistantTimestamp);
+          const assistantIndex = updatedMessages.messages.length;
+          const streamingMessages: ChatMessage[] = [
             ...updatedMessages.messages,
-            streamingAssistantMsg,
           ];
+          const renderStreamingResponse = () => {
+            streamingMessages[assistantIndex] = {
+              id: assistantId,
+              role: "assistant",
+              content: fullResponse,
+              timestamp: assistantTimestamp,
+            };
+            setMessages({ ...updatedMessages, messages: streamingMessages });
+          };
 
           // Coalesce token updates into a single render per animation frame
-          // instead of one full reconcile + smooth-scroll per token. Only the
-          // assistant message's content is mutated; the wrapper object is new
-          // so React still re-renders.
+          // instead of one full reconcile + smooth-scroll per token.
           let pendingFrame: number | null = null;
           const flushToUI = () => {
             pendingFrame = null;
             if (currentRequestIdRef.current !== requestId || signal.aborted) {
               return;
             }
-            streamingAssistantMsg.content = fullResponse;
-            setMessages({ ...updatedMessages, messages: streamingMessages });
+            renderStreamingResponse();
             scrollToBottom("auto");
           };
 
@@ -290,8 +295,7 @@ export const useChatCompletion = (
             pendingFrame = null;
           }
           if (currentRequestIdRef.current === requestId && !signal.aborted) {
-            streamingAssistantMsg.content = fullResponse;
-            setMessages({ ...updatedMessages, messages: streamingMessages });
+            renderStreamingResponse();
           }
         } catch (e: any) {
           // Only show error if this is still the current request and not aborted

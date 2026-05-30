@@ -8,7 +8,7 @@ import {
   GetLicense,
 } from "@/components";
 import { getConversationById } from "@/lib";
-import { ChatConversation } from "@/types";
+import { ChatConversation, ChatMessage } from "@/types";
 import {
   Download,
   MessageCircleIcon,
@@ -20,7 +20,7 @@ import {
   Check,
   Loader2,
 } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 import moment from "moment";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { PageLayout } from "@/layouts";
@@ -33,6 +33,85 @@ import {
   ChatFiles,
   AudioRecorder,
 } from ".";
+
+// Memoized so that during streaming only the row whose content actually
+// changed re-renders (and re-parses its markdown), instead of re-parsing every
+// message in the thread on each frame. The streaming assistant message is
+// mutated in place (same object reference), so we can't rely on React.memo's
+// default reference compare — we compare the fields that affect output.
+const ChatMessageRow = memo(
+  ({ message, showDate }: { message: ChatMessage; showDate: boolean }) => {
+    const isUser = message.role === "user";
+
+    return (
+      <div>
+        {/* Date separator */}
+        {showDate && (
+          <Badge
+            variant={"outline"}
+            className="flex items-center justify-center my-4 w-fit mx-auto"
+          >
+            {moment(message.timestamp).format("ddd, MMM D")}
+          </Badge>
+        )}
+
+        {/* Message */}
+        <div
+          className={`flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}
+        >
+          {/* Avatar - Left side for bot */}
+          {!isUser && (
+            <div className="flex-shrink-0">
+              <div className="size-7 lg:size-8 rounded-full bg-primary/10 flex items-center justify-center">
+                <SparklesIcon className="size-3 lg:size-4 text-primary" />
+              </div>
+            </div>
+          )}
+
+          {/* Message content */}
+          <div
+            className={`flex flex-col gap-1 max-w-[70%] ${
+              isUser ? "items-end" : "items-start"
+            }`}
+          >
+            <Card
+              className={`p-3 text-xs lg:text-sm transition-all shadow-none ${
+                isUser
+                  ? "!bg-primary text-primary-foreground !border-primary rounded-tr-sm"
+                  : "!bg-muted/50 dark:!bg-muted/30 rounded-tl-sm"
+              }`}
+            >
+              <Markdown>{message.content}</Markdown>
+            </Card>
+            <Badge
+              variant="outline"
+              className={`text-[10px] lg:text-xs bg-transparent border-none ${
+                isUser ? "-mr-1" : "-ml-1"
+              }`}
+            >
+              {moment(message.timestamp).format("hh:mm A")}
+            </Badge>
+          </div>
+
+          {/* Avatar - Right side for user */}
+          {isUser && (
+            <div className="flex-shrink-0">
+              <div className="size-7 lg:size-8 rounded-full bg-primary flex items-center justify-center">
+                <UserIcon className="size-3 lg:size-4 text-primary-foreground" />
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  },
+  (prev, next) =>
+    prev.message.id === next.message.id &&
+    prev.message.content === next.message.content &&
+    prev.message.role === next.message.role &&
+    prev.message.timestamp === next.message.timestamp &&
+    prev.showDate === next.showDate
+);
 
 const View = () => {
   const { conversationId } = useParams();
@@ -170,74 +249,17 @@ const View = () => {
       ) : (
         <div className="flex flex-col gap-4 pb-24 px-2">
           {messages?.messages.map((message, index, array) => {
-            const isUser = message.role === "user";
             const showDate =
               index === 0 ||
               moment(message.timestamp).format("YYYY-MM-DD") !==
                 moment(array[index - 1]?.timestamp).format("YYYY-MM-DD");
 
             return (
-              <div key={message.id}>
-                {/* Date separator */}
-                {showDate && (
-                  <Badge
-                    variant={"outline"}
-                    className="flex items-center justify-center my-4 w-fit mx-auto"
-                  >
-                    {moment(message.timestamp).format("ddd, MMM D")}
-                  </Badge>
-                )}
-
-                {/* Message */}
-                <div
-                  className={`flex gap-3 ${
-                    isUser ? "justify-end" : "justify-start"
-                  }`}
-                >
-                  {/* Avatar - Left side for bot */}
-                  {!isUser && (
-                    <div className="flex-shrink-0">
-                      <div className="size-7 lg:size-8 rounded-full bg-primary/10 flex items-center justify-center">
-                        <SparklesIcon className="size-3 lg:size-4 text-primary" />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Message content */}
-                  <div
-                    className={`flex flex-col gap-1 max-w-[70%] ${
-                      isUser ? "items-end" : "items-start"
-                    }`}
-                  >
-                    <Card
-                      className={`p-3 text-xs lg:text-sm transition-all shadow-none ${
-                        isUser
-                          ? "!bg-primary text-primary-foreground !border-primary rounded-tr-sm"
-                          : "!bg-muted/50 dark:!bg-muted/30 rounded-tl-sm"
-                      }`}
-                    >
-                      <Markdown>{message.content}</Markdown>
-                    </Card>
-                    <Badge
-                      variant="outline"
-                      className={`text-[10px] lg:text-xs bg-transparent border-none ${
-                        isUser ? "-mr-1" : "-ml-1"
-                      }`}
-                    >
-                      {moment(message.timestamp).format("hh:mm A")}
-                    </Badge>
-                  </div>
-
-                  {/* Avatar - Right side for user */}
-                  {isUser && (
-                    <div className="flex-shrink-0">
-                      <div className="size-7 lg:size-8 rounded-full bg-primary flex items-center justify-center">
-                        <UserIcon className="size-3 lg:size-4 text-primary-foreground" />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
+              <ChatMessageRow
+                key={message.id}
+                message={message}
+                showDate={showDate}
+              />
             );
           })}
           <div ref={completion.messagesEndRef} />
