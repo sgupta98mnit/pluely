@@ -11,11 +11,47 @@ import curl2Json from "@bany/curl-to-json";
 import { shouldUsePluelyAPI } from "./pluely.api";
 import { debugLog, redactHeaders, redactUrl } from "./debug.function";
 
+/**
+ * Base64-encodes audio off the main thread via a Web Worker so encoding the
+ * whole clip doesn't block the UI. Falls back to main-thread encoding when
+ * Workers are unavailable or fail to start.
+ */
+function audioToBase64(blob: Blob): Promise<string> {
+  if (typeof Worker === "undefined") {
+    return blobToBase64(blob);
+  }
+
+  let worker: Worker;
+  try {
+    worker = new Worker(new URL("./base64.worker.ts", import.meta.url), {
+      type: "module",
+    });
+  } catch {
+    return blobToBase64(blob);
+  }
+
+  return new Promise<string>((resolve, reject) => {
+    worker.onmessage = (
+      event: MessageEvent<{ base64?: string; error?: string }>
+    ) => {
+      worker.terminate();
+      if (event.data?.error) reject(new Error(event.data.error));
+      else resolve(event.data?.base64 ?? "");
+    };
+    worker.onerror = () => {
+      worker.terminate();
+      // Worker failed mid-flight — fall back to main-thread encoding.
+      blobToBase64(blob).then(resolve, reject);
+    };
+    worker.postMessage(blob);
+  });
+}
+
 // Pluely STT function
 async function fetchPluelySTT(audio: File | Blob): Promise<string> {
   try {
-    // Convert audio to base64
-    const audioBase64 = await blobToBase64(audio);
+    // Convert audio to base64 (off the main thread)
+    const audioBase64 = await audioToBase64(audio);
 
     // Call Tauri command
     const response = await invoke<{
@@ -127,10 +163,9 @@ export async function fetchSTT(params: STTParams): Promise<string> {
       provider.curl.includes("-F ") || provider.curl.includes("--form");
     if (isForm) {
       const form = new FormData();
-      const freshBlob = new Blob([await audio.arrayBuffer()], {
-        type: audio.type,
-      });
-      form.append("file", freshBlob, "audio.wav");
+      // Append the original blob directly; FormData copies nothing here and the
+      // explicit filename is preserved, so there's no need to rebuild it.
+      form.append("file", audio, "audio.wav");
       const headerKeys = Object.keys(headers).map((k) =>
         k.toUpperCase().replace(/[-_]/g, "")
       );
@@ -175,13 +210,11 @@ export async function fetchSTT(params: STTParams): Promise<string> {
       delete finalHeaders["Content-Type"];
       body = form;
     } else if (isBinaryUpload) {
-      // Deepgram-style: raw binary body
-      body = new Blob([await audio.arrayBuffer()], {
-        type: audio.type,
-      });
+      // Deepgram-style: raw binary body — send the original blob directly.
+      body = audio;
     } else {
-      // Google-style: JSON payload with base64
-      allVariables.AUDIO = await blobToBase64(audio);
+      // Google-style: JSON payload with base64 (encoded off the main thread)
+      allVariables.AUDIO = await audioToBase64(audio);
       const dataObj = curlJson.data ? { ...curlJson.data } : {};
       body = JSON.stringify(deepVariableReplacer(dataObj, allVariables));
     }
