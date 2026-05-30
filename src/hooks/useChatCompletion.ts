@@ -90,10 +90,10 @@ export const useChatCompletion = (
     screenshotConfigRef.current = screenshotConfiguration;
   }, [screenshotConfiguration]);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
     const responseSettings = getResponseSettings();
     if (responseSettings.autoScroll) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      messagesEndRef.current?.scrollIntoView({ behavior });
     }
   };
 
@@ -227,6 +227,35 @@ export const useChatCompletion = (
         let fullResponse = "";
 
         try {
+          // Assistant message is mutated in place as tokens stream in, so we
+          // never rebuild the whole messages array (O(n)) on every token.
+          const assistantTimestamp = timestamp + MESSAGE_ID_OFFSET;
+          const streamingAssistantMsg: ChatMessage = {
+            id: generateMessageId("assistant", assistantTimestamp),
+            role: "assistant",
+            content: "",
+            timestamp: assistantTimestamp,
+          };
+          const streamingMessages = [
+            ...updatedMessages.messages,
+            streamingAssistantMsg,
+          ];
+
+          // Coalesce token updates into a single render per animation frame
+          // instead of one full reconcile + smooth-scroll per token. Only the
+          // assistant message's content is mutated; the wrapper object is new
+          // so React still re-renders.
+          let pendingFrame: number | null = null;
+          const flushToUI = () => {
+            pendingFrame = null;
+            if (currentRequestIdRef.current !== requestId || signal.aborted) {
+              return;
+            }
+            streamingAssistantMsg.content = fullResponse;
+            setMessages({ ...updatedMessages, messages: streamingMessages });
+            scrollToBottom("auto");
+          };
+
           // Use the fetchAIResponse function with signal
           for await (const chunk of fetchAIResponse({
             provider: usePluelyAPI ? undefined : provider,
@@ -249,38 +278,20 @@ export const useChatCompletion = (
 
             fullResponse += chunk;
 
-            // Update the last message (assistant's response) in real-time
-            const assistantMsg: ChatMessage = {
-              id: generateMessageId("assistant", timestamp + MESSAGE_ID_OFFSET),
-              role: "assistant",
-              content: fullResponse,
-              timestamp: timestamp + MESSAGE_ID_OFFSET,
-            };
-
-            const updatedWithResponse = {
-              ...updatedMessages,
-              messages: [...updatedMessages.messages, assistantMsg],
-            };
-
-            // Check if assistant message already exists
-            const lastMessage =
-              updatedWithResponse.messages[
-                updatedWithResponse.messages.length - 1
-              ];
-            if (lastMessage.role === "assistant") {
-              // Update existing assistant message
-              updatedWithResponse.messages[
-                updatedWithResponse.messages.length - 1
-              ] = assistantMsg;
-            } else {
-              // Add new assistant message
-              updatedWithResponse.messages.push(assistantMsg);
+            // Schedule a single coalesced flush for the next frame.
+            if (pendingFrame === null) {
+              pendingFrame = requestAnimationFrame(flushToUI);
             }
+          }
 
-            setMessages(updatedWithResponse);
-
-            // Auto-scroll during streaming
-            scrollToBottom();
+          // Flush any frame still pending so the final tokens are rendered.
+          if (pendingFrame !== null) {
+            cancelAnimationFrame(pendingFrame);
+            pendingFrame = null;
+          }
+          if (currentRequestIdRef.current === requestId && !signal.aborted) {
+            streamingAssistantMsg.content = fullResponse;
+            setMessages({ ...updatedMessages, messages: streamingMessages });
           }
         } catch (e: any) {
           // Only show error if this is still the current request and not aborted
