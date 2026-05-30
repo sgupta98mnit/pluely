@@ -541,7 +541,11 @@ export const useCompletion = () => {
   };
 
   const handleScreenshotSubmit = useCallback(
-    async (base64: string, prompt?: string) => {
+    async (
+      base64: string,
+      prompt?: string,
+      options?: { systemPromptOverride?: string }
+    ) => {
       if (state.attachedFiles.length >= MAX_FILES) {
         setState((prev) => ({
           ...prev,
@@ -616,7 +620,8 @@ export const useCompletion = () => {
             for await (const chunk of fetchAIResponse({
               provider: usePluelyAPI ? undefined : provider,
               selectedProvider: selectedAIProvider,
-              systemPrompt: systemPrompt || undefined,
+              systemPrompt:
+                options?.systemPromptOverride || systemPrompt || undefined,
               history: messageHistory,
               userMessage: prompt,
               imagesBase64: [base64],
@@ -847,78 +852,23 @@ export const useCompletion = () => {
 
   const generateQuestionAndSubmit = useCallback(
     async (base64: string) => {
-      const usePluelyAPI = await shouldUsePluelyAPI();
-      // Check if AI provider is configured
-      if (!selectedAIProvider.provider && !usePluelyAPI) {
-        setState((prev) => ({
-          ...prev,
-          error: "Please select an AI provider in settings",
-        }));
-        return;
-      }
+      // Single streamed round trip: instead of first generating a question
+      // from the image and then answering it (two sequential completions, which
+      // doubled time-to-first-token), send the image with a combined
+      // "identify the problem and answer it" instruction in one call. The
+      // answer streams straight into the UI via handleScreenshotSubmit.
+      const identifyAndAnswerInstruction =
+        "You are an expert troubleshooter. Analyze the image provided. First identify the core problem, error, question, or subject matter, then directly provide a clear, complete solution, answer, or explanation for it. Respond with the solution itself and do not ask for clarification.";
 
-      const provider = allAiProviders.find(
-        (p) => p.id === selectedAIProvider.provider
-      );
-      if (!provider && !usePluelyAPI) {
-        setState((prev) => ({
-          ...prev,
-          error: "Invalid provider selected",
-        }));
-        return;
-      }
+      const combinedSystemPrompt = [systemPrompt, identifyAndAnswerInstruction]
+        .filter(Boolean)
+        .join("\n\n");
 
-      // 1. Generate Question
-      setState((prev) => ({
-        ...prev,
-        isLoading: true,
-        error: null,
-        response: "", // Clear previous response
-        input: "Thinking of a question...", // Temporary status
-      }));
-
-      // Create a temporary signal for this generation
-      const generationController = new AbortController();
-      const signal = generationController.signal;
-
-      let generatedQuestion = "";
-      try {
-        for await (const chunk of fetchAIResponse({
-          provider: usePluelyAPI ? undefined : provider,
-          selectedProvider: selectedAIProvider,
-          systemPrompt:
-            "You are an expert troubleshooter. Analyze the image provided. Identify the core problem, error, or subject matter. Generate a single, concise, one-sentence question that asking for a solution or explanation. For example: 'How do I fix this syntax error?', 'Explain the data trend in this chart', 'What is the solution to this math problem?'. Output ONLY the question.",
-          history: [],
-          userMessage: "Generate a question for this image.",
-          imagesBase64: [base64],
-          signal,
-        })) {
-          if (signal.aborted) break;
-          generatedQuestion += chunk;
-        }
-      } catch (e: any) {
-        console.error("Failed to generate question:", e);
-        // Fallback to auto prompt if generation fails
-        generatedQuestion = screenshotConfiguration.autoPrompt;
-      }
-
-      generatedQuestion = generatedQuestion.trim();
-      if (!generatedQuestion) {
-        generatedQuestion = screenshotConfiguration.autoPrompt;
-      }
-
-      // Clean up quotes if present
-      generatedQuestion = generatedQuestion.replace(/^["']|["']$/g, "");
-
-      // 2. Submit with generated question
-      await handleScreenshotSubmit(base64, generatedQuestion);
+      await handleScreenshotSubmit(base64, screenshotConfiguration.autoPrompt, {
+        systemPromptOverride: combinedSystemPrompt,
+      });
     },
-    [
-      allAiProviders,
-      selectedAIProvider,
-      handleScreenshotSubmit,
-      screenshotConfiguration.autoPrompt,
-    ]
+    [systemPrompt, handleScreenshotSubmit, screenshotConfiguration.autoPrompt]
   );
 
   const captureScreenshot = useCallback(async () => {
