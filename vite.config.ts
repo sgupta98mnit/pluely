@@ -18,15 +18,17 @@ export default defineConfig(async () => ({
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
   // 2. tauri expects a fixed port, fail if that port is not available
+  // 3420 instead of the Tauri default 1420: Windows (Hyper-V/WinNAT) reserves
+  // ports 1221-1720 on this machine, so binding 1420/1421 fails with EACCES
   server: {
-    port: 1420,
+    port: 3420,
     strictPort: true,
     host: host || false,
     hmr: host
       ? {
           protocol: "ws",
           host,
-          port: 1421,
+          port: 3421,
         }
       : undefined,
     watch: {

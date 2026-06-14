@@ -594,9 +594,20 @@ pub fn set_app_icon_visibility<R: Runtime>(app: AppHandle<R>, visible: bool) -> 
     {
         // On Windows, control taskbar icon visibility
         if let Some(window) = app.get_webview_window("main") {
+            let was_visible = window.is_visible().unwrap_or(true);
+
             window
                 .set_skip_taskbar(!visible)
                 .map_err(|e| format!("Failed to set taskbar visibility: {}", e))?;
+
+            // On Windows, toggling the taskbar style on an already-visible window
+            // does not reliably refresh the taskbar button. Cycle the window's
+            // visibility to force the taskbar to re-evaluate it. We only need to
+            // do this when hiding the icon (the failing direction).
+            if !visible && was_visible {
+                let _ = window.hide();
+                let _ = window.show();
+            }
         } else {
             eprintln!("Main window not found on Windows");
         }
