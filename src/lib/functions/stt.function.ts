@@ -7,6 +7,7 @@ import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
 
 import { TYPE_PROVIDER } from "@/types";
+import { STT_DOMAIN_PROMPT } from "@/config";
 import curl2Json from "@bany/curl-to-json";
 import { shouldUsePluelyAPI } from "./pluely.api";
 import { debugLog, redactHeaders, redactUrl } from "./debug.function";
@@ -122,7 +123,7 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     // }
 
     // Build variable map
-    const allVariables = {
+    const allVariables: Record<string, string> = {
       ...Object.fromEntries(
         Object.entries(selectedProvider.variables).map(([key, value]) => [
           key.toUpperCase(),
@@ -130,6 +131,10 @@ export async function fetchSTT(params: STTParams): Promise<string> {
         ])
       ),
     };
+
+    // Domain vocabulary hint for Whisper-style providers that reference
+    // {{PROMPT}} in their curl. Harmless for providers that don't use it.
+    allVariables.PROMPT = STT_DOMAIN_PROMPT;
 
     // Prepare request
     let url = deepVariableReplacer(curlJson.url || "", allVariables);

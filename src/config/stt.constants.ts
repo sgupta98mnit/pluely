@@ -1,3 +1,17 @@
+// Vocabulary hint passed to Whisper-style STT as the `prompt` field. Whisper
+// biases its decoding toward terms/spellings seen in the prompt, which fixes
+// the common technical mis-hearings (e.g. "radius" -> Redis, "characters" ->
+// caches, "nullization" -> authorization). Keep it well under Whisper's ~224
+// token prompt window and avoid quotes/newlines.
+export const STT_DOMAIN_PROMPT =
+  "Technical software engineering discussion. Topics include Redis, caching, " +
+  "Kafka, RabbitMQ, message queues, pub/sub, REST API, GraphQL, gRPC, " +
+  "WebSocket, JWT, OAuth, authentication, authorization, RBAC, ABAC, rate " +
+  "limiting, token bucket, microservices, PostgreSQL, MySQL, MongoDB, NoSQL, " +
+  "SQL, indexing, sharding, Docker, Kubernetes, CI/CD, nginx, load balancing, " +
+  "latency, throughput, idempotency, webhook, schema, endpoint, middleware, " +
+  "TypeScript, JavaScript, Python, Java, Spring Boot, Node.js.";
+
 export const SPEECH_TO_TEXT_PROVIDERS = [
   {
     // Default: fastest STT entry, which is a real latency win for voice.
@@ -8,6 +22,7 @@ export const SPEECH_TO_TEXT_PROVIDERS = [
       -F "file={{AUDIO}}" \\
       -F model={{MODEL}} \\
       -F temperature=0 \\
+      -F "prompt={{PROMPT}}" \\
       -F response_format=text \\
       -F language=en`,
     responseContentPath: "text",
@@ -19,6 +34,7 @@ export const SPEECH_TO_TEXT_PROVIDERS = [
     curl: `curl -X POST "https://api.openai.com/v1/audio/transcriptions" \\
       -H "Authorization: Bearer {{API_KEY}}" \\
       -F "file={{AUDIO}}" \\
+      -F "prompt={{PROMPT}}" \\
       -F "model={{MODEL}}"`,
     responseContentPath: "text",
     streaming: false,
