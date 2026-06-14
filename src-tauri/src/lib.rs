@@ -49,6 +49,7 @@ pub fn run() {
         .manage(shortcuts::RegisteredShortcuts::default())
         .manage(shortcuts::LicenseState::default())
         .manage(shortcuts::MoveWindowState::default())
+        .manage(window::OverlayFullscreenState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_http::init())
@@ -79,6 +80,7 @@ pub fn run() {
             window::open_dashboard,
             window::toggle_dashboard,
             window::move_window,
+            window::set_overlay_fullscreen,
             capture::capture_to_base64,
             capture::start_screen_capture,
             capture::capture_selected_area,
