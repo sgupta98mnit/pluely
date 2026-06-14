@@ -5,9 +5,9 @@ import {
   AudioVisualizer,
   StatusIndicator,
 } from "./components";
-import { useApp } from "@/hooks";
+import { useApp, useOverlayFullscreen } from "@/hooks";
 import { useApp as useAppContext } from "@/contexts";
-import { SparklesIcon } from "lucide-react";
+import { SparklesIcon, Maximize2, Minimize2 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { ErrorBoundary } from "react-error-boundary";
 import { ErrorLayout } from "@/layouts";
@@ -15,6 +15,7 @@ import { getPlatform } from "@/lib";
 
 const App = () => {
   const { isHidden, systemAudio } = useApp();
+  const { isFullscreen, toggleFullscreen } = useOverlayFullscreen();
   const { customizable } = useAppContext();
   const platform = getPlatform();
 
@@ -68,6 +69,18 @@ const App = () => {
             }`}
           >
             <Completion isHidden={isHidden} />
+            <Button
+              size={"icon"}
+              className="cursor-pointer"
+              title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+              onClick={toggleFullscreen}
+            >
+              {isFullscreen ? (
+                <Minimize2 className="h-4 w-4" />
+              ) : (
+                <Maximize2 className="h-4 w-4" />
+              )}
+            </Button>
             <Button
               size={"icon"}
               className="cursor-pointer"
