@@ -19,7 +19,7 @@ export const useOverlayFullscreen = () => {
   const { registerCustomShortcutCallback, unregisterCustomShortcutCallback } =
     useGlobalShortcuts();
 
-  const setFullscreen = useCallback(async (enabled: boolean) => {
+  const applyFullscreen = useCallback(async (enabled: boolean) => {
     setIsFullscreen(enabled);
     try {
       if (enabled) {
@@ -33,14 +33,16 @@ export const useOverlayFullscreen = () => {
       }
     } catch (error) {
       console.error("Failed to set overlay fullscreen:", error);
-      // Keep the module flag consistent with the attempted state.
-      fullscreenActive = enabled;
+      // The native window never changed, so roll the UI and module flag back
+      // to the pre-toggle state to stay consistent with reality.
+      setIsFullscreen(!enabled);
+      fullscreenActive = !enabled;
     }
   }, []);
 
   const toggleFullscreen = useCallback(() => {
-    setFullscreen(!fullscreenActive);
-  }, [setFullscreen]);
+    applyFullscreen(!fullscreenActive);
+  }, [applyFullscreen]);
 
   // Register the global-shortcut callback (Ctrl/Cmd+Shift+F).
   useEffect(() => {
