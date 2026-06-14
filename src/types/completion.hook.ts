@@ -48,8 +48,15 @@ export interface UseCompletionReturn {
   clearFiles: () => void;
 
   // Completion actions
-  /** Function to submit the completion request, optionally with speech text */
-  submit: (speechText?: string) => Promise<void>;
+  /**
+   * Function to submit the completion request, optionally with speech text.
+   * Pass { queue: true } (voice mode) to enqueue behind an in-flight request
+   * instead of aborting it, so rapid utterances are answered in order.
+   */
+  submit: (
+    speechText?: string,
+    options?: { queue?: boolean }
+  ) => Promise<void>;
   /** Function to cancel the current completion request */
   cancel: () => void;
   /** Function to reset the completion state (clears input, response, error, files) */

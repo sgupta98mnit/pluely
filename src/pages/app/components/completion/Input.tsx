@@ -34,6 +34,7 @@ export const Input = ({
   isHidden,
   keepEngaged,
   setKeepEngaged,
+  enableVAD,
 }: UseCompletionReturn & { isHidden: boolean }) => {
   return (
     <div className="relative flex-1">
@@ -168,8 +169,10 @@ export const Input = ({
               )}
               {response && <Markdown>{response}</Markdown>}
 
-              {/* Conversation History - Separate scroll, no auto-scroll */}
-              {keepEngaged && conversationHistory.length > 1 && (
+              {/* Prior answers as scrollable cards. Shown in conversation mode
+                  and in voice mode, where rapid utterances produce several
+                  answers the user needs to scroll back through. */}
+              {(keepEngaged || enableVAD) && conversationHistory.length > 1 && (
                 <div className="space-y-3 pt-3">
                   {conversationHistory
                     .sort((a, b) => b?.timestamp - a?.timestamp)

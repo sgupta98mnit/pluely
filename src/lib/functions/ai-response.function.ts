@@ -174,8 +174,12 @@ async function* fetchPluelyAIResponse(params: {
       unlistenComplete();
     }
   } catch (error) {
+    // A cancelled request is not an error - stay silent so it isn't surfaced.
+    if (params.signal?.aborted) return;
     const errorMessage = error instanceof Error ? error.message : String(error);
-    yield `Pluely API Error: ${errorMessage}`;
+    // Throw instead of yielding: a yielded string becomes response content and
+    // gets saved as an assistant message, polluting the conversation history.
+    throw new Error(`Pluely API Error: ${errorMessage}`);
   }
 }
 
@@ -337,10 +341,11 @@ export async function* fetchAIResponse(params: {
       ) {
         return; // Silently return on abort
       }
-      yield `Network error during API request: ${
-        fetchError instanceof Error ? fetchError.message : "Unknown error"
-      }`;
-      return;
+      throw new Error(
+        `Network error during API request: ${
+          fetchError instanceof Error ? fetchError.message : "Unknown error"
+        }`
+      );
     }
 
     debugLog(
@@ -353,10 +358,11 @@ export async function* fetchAIResponse(params: {
         errorText = await response.text();
       } catch {}
       debugLog("[AI ◀ error body]", errorText);
-      yield `API request failed: ${response.status} ${response.statusText}${
-        errorText ? ` - ${errorText}` : ""
-      }`;
-      return;
+      throw new Error(
+        `API request failed: ${response.status} ${response.statusText}${
+          errorText ? ` - ${errorText}` : ""
+        }`
+      );
     }
 
     if (!provider?.streaming) {
@@ -364,10 +370,11 @@ export async function* fetchAIResponse(params: {
       try {
         json = await response.json();
       } catch (parseError) {
-        yield `Failed to parse non-streaming response: ${
-          parseError instanceof Error ? parseError.message : "Unknown error"
-        }`;
-        return;
+        throw new Error(
+          `Failed to parse non-streaming response: ${
+            parseError instanceof Error ? parseError.message : "Unknown error"
+          }`
+        );
       }
       debugLog("[AI ◀ response (non-stream)]", truncateForLog(json));
       const content =
@@ -378,8 +385,7 @@ export async function* fetchAIResponse(params: {
     }
 
     if (!response.body) {
-      yield "Streaming not supported or response body missing";
-      return;
+      throw new Error("Streaming not supported or response body missing");
     }
 
     const reader = response.body.getReader();
@@ -405,10 +411,11 @@ export async function* fetchAIResponse(params: {
         ) {
           return; // Silently return on abort
         }
-        yield `Error reading stream: ${
-          readError instanceof Error ? readError.message : "Unknown error"
-        }`;
-        return;
+        throw new Error(
+          `Error reading stream: ${
+            readError instanceof Error ? readError.message : "Unknown error"
+          }`
+        );
       }
       const { done, value } = readResult;
       if (done) {
@@ -447,10 +454,10 @@ export async function* fetchAIResponse(params: {
       }
     }
   } catch (error) {
-    throw new Error(
-      `Error in fetchAIResponse: ${
-        error instanceof Error ? error.message : "Unknown error"
-      }`
-    );
+    // Preserve the original error (and its message) rather than re-wrapping, so
+    // callers can show the real cause (e.g. "API request failed: 400 ...").
+    throw error instanceof Error
+      ? error
+      : new Error(`Error in fetchAIResponse: ${String(error)}`);
   }
 }

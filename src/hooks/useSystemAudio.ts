@@ -18,6 +18,7 @@ import {
   generateConversationId,
   generateMessageId,
 } from "@/lib";
+import { isMeaningfulTranscription } from "@/lib/utils";
 import { Message } from "@/types/completion";
 
 // VAD Configuration interface matching Rust
@@ -272,7 +273,7 @@ export function useSystemAudio() {
                 timeoutPromise,
               ]);
 
-              if (transcription.trim()) {
+              if (isMeaningfulTranscription(transcription)) {
                 setLastTranscription(transcription);
                 setError("");
 
@@ -515,6 +516,9 @@ export function useSystemAudio() {
           }
         } catch (aiError: any) {
           setError(aiError.message || "Failed to get AI response");
+          // Don't persist a turn that errored - otherwise a partial stream or
+          // an error message would be saved as the assistant's answer.
+          return;
         }
 
         if (fullResponse) {

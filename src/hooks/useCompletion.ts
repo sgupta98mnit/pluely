@@ -94,6 +94,18 @@ export const useCompletion = () => {
   const abortControllerRef = useRef<AbortController | null>(null);
   const currentRequestIdRef = useRef<string | null>(null);
 
+  // Voice-mode submission queue: rapid utterances would otherwise each abort
+  // the in-flight answer (see submit). When a request is already streaming we
+  // queue the next transcription and drain it when the current one finishes, so
+  // every utterance gets answered in order and answers stack as separate cards.
+  const isSubmittingRef = useRef(false);
+  const submitQueueRef = useRef<string[]>([]);
+
+  // Tracks whether the response scroll viewport is pinned to the bottom. While
+  // pinned, streaming tokens auto-scroll; once the user scrolls up to read an
+  // earlier answer, auto-scroll backs off until they return to the bottom.
+  const isAtBottomRef = useRef(true);
+
   const setInput = useCallback((value: string) => {
     setState((prev) => ({ ...prev, input: value }));
   }, []);
@@ -134,10 +146,18 @@ export const useCompletion = () => {
   }, []);
 
   const submit = useCallback(
-    async (speechText?: string) => {
+    async (speechText?: string, options?: { queue?: boolean }) => {
       const input = speechText || state.input;
 
       if (!input.trim()) {
+        return;
+      }
+
+      // Voice mode passes { queue: true }: if an answer is already streaming,
+      // enqueue this utterance instead of aborting the in-flight request, so
+      // answers don't clobber each other. The queue is drained in `finally`.
+      if (options?.queue && isSubmittingRef.current) {
+        submitQueueRef.current.push(input);
         return;
       }
 
@@ -147,6 +167,8 @@ export const useCompletion = () => {
           input: speechText,
         }));
       }
+
+      isSubmittingRef.current = true;
 
       // Generate unique request ID
       const requestId = generateRequestId();
@@ -281,6 +303,14 @@ export const useCompletion = () => {
             error: error instanceof Error ? error.message : "An error occurred",
             isLoading: false,
           }));
+        }
+      } finally {
+        isSubmittingRef.current = false;
+        // Drain the next queued voice utterance, if any. Guarded by the ref
+        // above so a fresh request can't start while one is still streaming.
+        const next = submitQueueRef.current.shift();
+        if (next !== undefined) {
+          submit(next, { queue: true });
         }
       }
     },
@@ -781,14 +811,40 @@ export const useCompletion = () => {
     isFilesPopoverOpen,
   ]);
 
-  // Auto scroll to bottom when response updates
+  // Track whether the viewport is pinned to the bottom so streaming tokens only
+  // auto-scroll when the user hasn't scrolled up to read an earlier answer.
+  useEffect(() => {
+    if (!isPopoverOpen) return;
+
+    const scrollElement = scrollAreaRef.current?.querySelector(
+      "[data-radix-scroll-area-viewport]"
+    ) as HTMLElement | null;
+    if (!scrollElement) return;
+
+    const updateAtBottom = () => {
+      const distanceFromBottom =
+        scrollElement.scrollHeight -
+        scrollElement.scrollTop -
+        scrollElement.clientHeight;
+      isAtBottomRef.current = distanceFromBottom < 80;
+    };
+
+    updateAtBottom();
+    scrollElement.addEventListener("scroll", updateAtBottom, { passive: true });
+    return () => scrollElement.removeEventListener("scroll", updateAtBottom);
+  }, [isPopoverOpen]);
+
+  // Auto scroll to bottom when response updates, but only while pinned to the
+  // bottom. If the user scrolled up to read a previous answer, new tokens won't
+  // yank them back down.
   useEffect(() => {
     const responseSettings = getResponseSettings();
     if (
       !keepEngaged &&
       state.response &&
       scrollAreaRef.current &&
-      responseSettings.autoScroll
+      responseSettings.autoScroll &&
+      isAtBottomRef.current
     ) {
       const scrollElement = scrollAreaRef.current.querySelector(
         "[data-radix-scroll-area-viewport]"

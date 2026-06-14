@@ -46,3 +46,60 @@ export const floatArrayToWav = (
 
   return new Blob([buffer], { type: `audio/${format}` });
 };
+
+// Minimum characters/words a transcription must have to be worth an AI call.
+const MIN_TRANSCRIPTION_CHARS = 3;
+const MIN_TRANSCRIPTION_WORDS = 2;
+
+// Short utterances STT commonly returns for coughs, breaths, or filler that we
+// don't want to spend an API round-trip on. Compared case-insensitively after
+// stripping surrounding punctuation.
+const FILLER_TRANSCRIPTIONS = new Set([
+  "uh",
+  "um",
+  "umm",
+  "uhh",
+  "hmm",
+  "hm",
+  "huh",
+  "ah",
+  "oh",
+  "ok",
+  "okay",
+  "mm",
+  "mhm",
+  "yeah",
+  "yep",
+  "no",
+  "you",
+  "thank you",
+  "thanks",
+  "bye",
+  ".",
+  "...",
+]);
+
+/**
+ * Returns true if a transcription is substantive enough to send to the AI.
+ * Filters out empty/whitespace results, trivially short noise, and a small set
+ * of common filler phrases that STT produces from coughs/breaths/silence.
+ */
+export const isMeaningfulTranscription = (text: string | null | undefined): boolean => {
+  if (!text) return false;
+
+  const trimmed = text.trim();
+  if (trimmed.length < MIN_TRANSCRIPTION_CHARS) return false;
+
+  // Normalize for filler comparison: lowercase, drop surrounding punctuation.
+  const normalized = trimmed.toLowerCase().replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu, "");
+  if (!normalized) return false;
+  if (FILLER_TRANSCRIPTIONS.has(normalized)) return false;
+
+  // A single very short word (e.g. "ok.") that slipped past the filler list.
+  const words = normalized.split(/\s+/).filter(Boolean);
+  if (words.length < MIN_TRANSCRIPTION_WORDS && normalized.length < 4) {
+    return false;
+  }
+
+  return true;
+};

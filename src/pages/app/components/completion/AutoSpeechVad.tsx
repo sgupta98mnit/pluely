@@ -5,7 +5,7 @@ import { LoaderCircleIcon, MicIcon, MicOffIcon } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components";
 import { useApp } from "@/contexts";
-import { floatArrayToWav } from "@/lib/utils";
+import { floatArrayToWav, isMeaningfulTranscription } from "@/lib/utils";
 import { shouldUsePluelyAPI } from "@/lib/functions/pluely.api";
 
 interface AutoSpeechVADProps {
@@ -24,14 +24,26 @@ const AutoSpeechVADInternal = ({
   const [isTranscribing, setIsTranscribing] = useState(false);
   const { selectedSttProvider, allSttProviders } = useApp();
 
-  const audioConstraints: MediaTrackConstraints =
-    microphoneDeviceId && microphoneDeviceId !== "default"
+  // Enable the browser's acoustic echo canceller + noise suppression so the
+  // mic doesn't transcribe what the speakers are playing (the other party on a
+  // call, system sounds). Without these the speaker output bleeds into the mic
+  // signal and gets sent to STT as if the user said it.
+  const audioConstraints: MediaTrackConstraints = {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    ...(microphoneDeviceId && microphoneDeviceId !== "default"
       ? { deviceId: { exact: microphoneDeviceId } }
-      : {};
+      : {}),
+  };
 
   const vad = useMicVAD({
     userSpeakingThreshold: 0.6,
     startOnLoad: true,
+    // Wait longer (default is 8 frames) through brief pauses before declaring
+    // speech ended, so a natural mid-sentence pause doesn't get chopped into
+    // fragments ("So,", "of the") that each fire a separate question.
+    redemptionFrames: 14,
     additionalAudioConstraints: audioConstraints,
     onSpeechEnd: async (audio) => {
       try {
@@ -75,8 +87,10 @@ const AutoSpeechVADInternal = ({
           audio: audioBlob,
         });
 
-        if (transcription) {
-          submit(transcription);
+        // Skip empty/too-short/filler results so we don't burn an AI call on
+        // coughs, breaths, or silence that STT turned into noise.
+        if (isMeaningfulTranscription(transcription)) {
+          submit(transcription, { queue: true });
         }
       } catch (error) {
         console.error("Failed to transcribe audio:", error);
