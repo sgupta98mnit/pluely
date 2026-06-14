@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useCallback, useEffect, useRef } from "react";
+import { isOverlayFullscreen } from "./useOverlayFullscreen";
 
 // Helper function to check if any popover is open in the DOM
 const isAnyPopoverOpen = (): boolean => {
@@ -13,6 +14,12 @@ const isAnyPopoverOpen = (): boolean => {
 export const useWindowResize = () => {
   const resizeWindow = useCallback(async (expanded: boolean) => {
     try {
+      // Fullscreen owns the window geometry; never let auto-resize (which
+      // hardcodes a 600px width via set_window_height) clobber it.
+      if (isOverlayFullscreen()) {
+        return;
+      }
+
       const window = getCurrentWebviewWindow();
 
       if (!expanded && isAnyPopoverOpen()) {
