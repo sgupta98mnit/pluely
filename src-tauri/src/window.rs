@@ -227,7 +227,7 @@ pub fn show_dashboard_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), Strin
 /// pre-fullscreen position and size.
 #[derive(Default)]
 pub struct OverlayFullscreenState {
-    pub saved: std::sync::Mutex<Option<(tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>)>>,
+    pub(crate) saved: std::sync::Mutex<Option<(tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>)>>,
 }
 
 /// Expand the main overlay window to the current monitor's work area
@@ -248,10 +248,10 @@ pub fn set_overlay_fullscreen(
             .outer_size()
             .map_err(|e| format!("Failed to read window size: {}", e))?;
         {
-            let mut saved = state
-                .saved
-                .lock()
-                .map_err(|e| format!("Fullscreen state lock poisoned: {}", e))?;
+            let mut saved = match state.saved.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             *saved = Some((pos, size));
         }
 
@@ -262,17 +262,17 @@ pub fn set_overlay_fullscreen(
         let area = monitor.work_area();
 
         window
-            .set_position(Position::Physical(area.position))
-            .map_err(|e| format!("Failed to position fullscreen window: {}", e))?;
-        window
             .set_size(Size::Physical(area.size))
             .map_err(|e| format!("Failed to resize fullscreen window: {}", e))?;
+        window
+            .set_position(Position::Physical(area.position))
+            .map_err(|e| format!("Failed to position fullscreen window: {}", e))?;
     } else {
         let saved = {
-            let mut guard = state
-                .saved
-                .lock()
-                .map_err(|e| format!("Fullscreen state lock poisoned: {}", e))?;
+            let mut guard = match state.saved.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             guard.take()
         };
         if let Some((pos, size)) = saved {
