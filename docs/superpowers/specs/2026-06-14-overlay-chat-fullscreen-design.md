@@ -9,18 +9,20 @@ Add a fullscreen view mode to the **overlay AI Response panel** (the floating
 bar's chat popover). Today the response renders in a Radix popover under a thin
 600px-wide bar. Fullscreen expands the overlay window to fill the monitor's
 **work area** (taskbar/menubar stay visible) so the chat uses the whole screen.
-It is toggled by a header button and a global hotkey, stays on across new
-messages until explicitly toggled off, and restores the compact bar when the
-response panel closes.
+It is toggled by an icon on the always-visible overlay bar and a global hotkey,
+and stays on across new messages (and across opening/closing the response panel)
+until explicitly toggled off.
 
 ## Goals
 
 - A fullscreen toggle for the overlay response panel only (not the dashboard
   `/chats` view).
 - Expand to the current monitor's **work area** (do not cover the taskbar/menubar).
-- Toggle via a header button **and** a global hotkey (`Ctrl/Cmd+Shift+F`).
-- Once enabled, stay fullscreen across subsequent messages/responses until the
-  user toggles it off or the panel fully closes.
+- Toggle via an icon on the always-visible overlay bar **and** a global hotkey
+  (`Ctrl/Cmd+Shift+F`). Both work at any time, whether or not a response panel
+  is open.
+- Once enabled, stay fullscreen across subsequent messages/responses and across
+  opening/closing the response panel, until the user explicitly toggles it off.
 - Reuse the existing response popover rendering — no new dedicated layout.
 
 ## Non-Goals
@@ -93,11 +95,9 @@ State/behavior:
   between the resize guard and the panel).
 - `toggleFullscreen()` / `enterFullscreen()` / `exitFullscreen()` — set state and
   `invoke("set_overlay_fullscreen", { enabled })`.
-- On `enterFullscreen`, the response popover must remain open. Since the popover
-  is controlled by `isPopoverOpen` in `useCompletion`, toggling fullscreen does
-  not itself open/close it; we only resize the window. (Fullscreen is only
-  reachable from the header button while the panel is open, or from the hotkey —
-  see §4 for the hotkey-while-closed case.)
+- Toggling fullscreen only resizes the window; it never opens or closes the
+  response popover (which stays controlled by `isPopoverOpen` in
+  `useCompletion`). So fullscreen and panel-open are fully independent states.
 
 ### 3. `useWindowResize` guard
 
@@ -125,32 +125,40 @@ open. Add a guard so it does **not** shrink while `isFullscreen` is true:
 - Register the callback via `registerCustomShortcutCallback("toggle_fullscreen", toggleFullscreen)`
   (and unregister on cleanup) from wherever `useOverlayFullscreen` is mounted in
   the app overlay.
-- Hotkey-while-panel-closed: the hotkey only acts when the response panel is
-  open. If pressed with no panel open, it is a no-op (entering fullscreen on an
-  empty bar has no payoff). The callback reads the current panel-open state and
-  returns early when closed.
+- The hotkey toggles fullscreen at any time, regardless of whether the response
+  panel is open — matching the always-visible bar icon. With no response open,
+  fullscreen simply enlarges the bar+canvas; a subsequent response fills it.
 
-### 5. Header toggle button (`Input.tsx`)
+### 5. Toggle icon on the overlay bar (`app/index.tsx`)
 
-- Add a `Maximize2` / `Minimize2` (lucide) icon button in the response panel
-  header, next to the Copy button.
-- `onClick` → `toggleFullscreen()`. Icon reflects `isFullscreen`.
+- Add a `Maximize2` / `Minimize2` (lucide) icon `Button` to the always-visible
+  main bar in `src/pages/app/index.tsx`, next to the existing Sparkles
+  (dashboard) button.
+- `onClick` → `toggleFullscreen()`. Icon reflects `isFullscreen`
+  (`Minimize2` when fullscreen, `Maximize2` otherwise).
 - `title` reflects state ("Enter fullscreen" / "Exit fullscreen").
-- The button must not close the popover (it only resizes the window).
+- The button lives in the bar's right-hand control cluster; it is visible
+  whether or not a response panel is open. It is hidden along with the rest of
+  the controls when `systemAudio.capturing` (consistent with the existing
+  Completion/Sparkles cluster).
+- No changes needed in `Input.tsx`: resizing the window is independent of the
+  Radix popover, which stays anchored to the input and re-flows automatically.
 
 ### 6. Lifecycle
 
-- Fullscreen **stays on across new messages/responses** while the panel is open.
-- When the response panel closes/resets (the existing `reset()` path or the
-  Close button), **exit fullscreen and restore** the compact window. Wire
-  `exitFullscreen()` into the panel-close flow so the window never gets stranded
-  at full size with no panel.
+- Fullscreen **stays on across new messages/responses and across opening or
+  closing the response panel**. It is toggled off only by the user (bar icon or
+  hotkey).
+- Because the bar icon is always visible, there is no auto-exit on panel close:
+  the window can sit at work-area size showing just the bar, and the user
+  restores it from the same icon. The `useWindowResize` guard (§3) keeps the
+  window from auto-shrinking to 54 while fullscreen is active.
 - Not persisted to storage; defaults to off on each app launch.
 
 ## Data Flow
 
 ```
-[Header button click]  ─┐
+[Bar icon click]       ─┐
                         ├─► useOverlayFullscreen.toggleFullscreen()
 [Ctrl/Cmd+Shift+F] ─────┘        │
    │ (Rust emits                 ▼
@@ -175,10 +183,11 @@ open. Add a guard so it does **not** shrink while `isFullscreen` is true:
 
 ## Testing
 
-- **Manual (primary)**: enter via button and via hotkey; confirm window fills the
-  work area and the taskbar/menubar remain visible; send another message and
-  confirm it stays fullscreen; toggle off and confirm restore to prior
-  position/size; close the panel while fullscreen and confirm the bar restores.
+- **Manual (primary)**: enter via the bar icon and via hotkey; confirm window
+  fills the work area and the taskbar/menubar remain visible; send another
+  message and confirm it stays fullscreen; close the response panel while
+  fullscreen and confirm it **stays** at work-area size (does not auto-restore);
+  toggle off via the bar icon and confirm restore to the prior position/size.
 - **Multi-monitor**: trigger fullscreen with the bar on a secondary monitor;
   confirm it fills that monitor's work area, not the primary.
 - **Rust**: the command is thin and platform-dependent; covered by manual
@@ -194,10 +203,9 @@ open. Add a guard so it does **not** shrink while `isFullscreen` is true:
 - `src/hooks/useWindow.ts` — fullscreen guard in `useWindowResize`.
 - `src/hooks/useOverlayFullscreen.ts` — new hook (+ barrel export in `src/hooks/index.ts`).
 - `src/config/shortcuts.ts` — add `toggle_fullscreen` default action.
-- `src/pages/app/components/completion/Input.tsx` — header toggle button.
-- Wiring point (e.g. `src/pages/app/index.tsx` or the completion hook) — mount
-  `useOverlayFullscreen`, register the custom-shortcut callback, and connect
-  `exitFullscreen` to the panel-close flow.
+- `src/pages/app/index.tsx` — add the fullscreen toggle icon to the overlay bar,
+  mount `useOverlayFullscreen`, and register/unregister the custom-shortcut
+  callback.
 
 ## Open Implementation Checks
 
