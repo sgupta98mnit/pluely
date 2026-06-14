@@ -71,4 +71,14 @@ export const DEFAULT_SHORTCUT_ACTIONS: ShortcutAction[] = [
       linux: "ctrl+shift+s",
     },
   },
+  {
+    id: "toggle_fullscreen",
+    name: "Toggle Fullscreen",
+    description: "Expand/restore the AI response panel to fullscreen",
+    defaultKey: {
+      macos: "cmd+shift+f",
+      windows: "ctrl+shift+f",
+      linux: "ctrl+shift+f",
+    },
+  },
 ];
