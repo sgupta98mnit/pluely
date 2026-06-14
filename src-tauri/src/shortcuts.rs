@@ -696,6 +696,18 @@ fn handle_focus_input<R: Runtime>(app: &AppHandle<R>) {
 }
 
 fn handle_move_window<R: Runtime>(app: &AppHandle<R>, direction: &str) {
+    // Fullscreen owns the overlay geometry; ignore move-window while active.
+    {
+        let fullscreen_state = app.state::<crate::window::OverlayFullscreenState>();
+        let is_fullscreen = match fullscreen_state.saved.lock() {
+            Ok(guard) => guard.is_some(),
+            Err(poisoned) => poisoned.into_inner().is_some(),
+        };
+        if is_fullscreen {
+            return;
+        }
+    }
+
     if let Some(window) = app.get_webview_window("main") {
         match window.outer_position() {
             Ok(current_pos) => {
