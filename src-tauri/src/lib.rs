@@ -87,8 +87,11 @@ pub fn run() {
         )
         .manage(AudioState::default())
         .manage(CaptureState::default())
+        // Launch hidden so the process has no visible window at startup and is
+        // listed under "Background processes" (not "Apps") in Task Manager. The
+        // overlay is shown on demand via the tray item or toggle shortcut.
         .manage(shortcuts::WindowVisibility {
-            is_hidden: Mutex::new(false),
+            is_hidden: Mutex::new(true),
         })
         .manage(shortcuts::RegisteredShortcuts::default())
         .manage(shortcuts::LicenseState::default())

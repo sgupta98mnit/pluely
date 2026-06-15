@@ -86,16 +86,108 @@ export const useChatCompletion = (
   const hasCheckedPermissionRef = useRef(false);
   const screenshotInitiatedByThisContext = useRef(false);
 
+  // Track the actual scroll viewport (Radix ScrollArea) and whether the user
+  // is pinned at the bottom. While they have scrolled up to read or select a
+  // previous question, streaming tokens must NOT yank the viewport back down.
+  const scrollContainerRef = useRef<HTMLElement | null>(null);
+  const isAtBottomRef = useRef(true);
+  const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
+
   useEffect(() => {
     screenshotConfigRef.current = screenshotConfiguration;
   }, [screenshotConfiguration]);
 
-  const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
-    const responseSettings = getResponseSettings();
-    if (responseSettings.autoScroll) {
-      messagesEndRef.current?.scrollIntoView({ behavior });
+  // Resolve the scrolling viewport lazily — the Radix ScrollArea viewport
+  // (PageLayout) is the nearest ancestor of messagesEndRef with the
+  // `data-radix-scroll-area-viewport` attribute.
+  const findScrollContainer = useCallback((): HTMLElement | null => {
+    if (scrollContainerRef.current && scrollContainerRef.current.isConnected) {
+      return scrollContainerRef.current;
     }
-  };
+    const el = messagesEndRef.current?.closest(
+      "[data-radix-scroll-area-viewport]"
+    ) as HTMLElement | null;
+    if (el) scrollContainerRef.current = el;
+    return el;
+  }, []);
+
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior = "smooth", force = false) => {
+      const responseSettings = getResponseSettings();
+      if (!responseSettings.autoScroll) return;
+      // Respect the user: if they've scrolled up to interact with a previous
+      // message, don't drag them back down on every streamed token. They can
+      // resume autoscroll explicitly via the "Jump to latest" button.
+      if (!force && !isAtBottomRef.current) return;
+
+      const el = findScrollContainer();
+      if (el) {
+        el.scrollTo({ top: el.scrollHeight, behavior });
+      } else {
+        messagesEndRef.current?.scrollIntoView({ behavior });
+      }
+    },
+    [findScrollContainer]
+  );
+
+  // Public: jump back to the latest message and re-pin to the bottom.
+  const jumpToBottom = useCallback(() => {
+    isAtBottomRef.current = true;
+    setIsPinnedToBottom(true);
+    const el = findScrollContainer();
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    } else {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [findScrollContainer]);
+
+  // Watch the scroll viewport so we know whether the user is pinned at the
+  // bottom. Re-runs per conversation so we re-attach after route changes
+  // (the View can unmount/remount when switching conversations).
+  useEffect(() => {
+    let cancelled = false;
+    let attachTimer: ReturnType<typeof setTimeout> | null = null;
+    let scrollEl: HTMLElement | null = null;
+    let onScroll: (() => void) | null = null;
+
+    const attach = () => {
+      if (cancelled) return;
+      const el = messagesEndRef.current?.closest(
+        "[data-radix-scroll-area-viewport]"
+      ) as HTMLElement | null;
+      if (!el) {
+        // The viewport may not be mounted yet on first render — retry shortly.
+        attachTimer = setTimeout(attach, 150);
+        return;
+      }
+      scrollContainerRef.current = el;
+      scrollEl = el;
+
+      const update = () => {
+        const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+        const atBottom = distance < 80;
+        if (isAtBottomRef.current !== atBottom) {
+          isAtBottomRef.current = atBottom;
+          setIsPinnedToBottom(atBottom);
+        }
+      };
+      update();
+      onScroll = update;
+      el.addEventListener("scroll", update, { passive: true });
+    };
+
+    attach();
+
+    return () => {
+      cancelled = true;
+      if (attachTimer) clearTimeout(attachTimer);
+      if (scrollEl && onScroll) {
+        scrollEl.removeEventListener("scroll", onScroll);
+      }
+      scrollContainerRef.current = null;
+    };
+  }, [conversationId]);
 
   const setInput = useCallback((value: string) => {
     setState((prev) => ({ ...prev, input: value }));
@@ -221,8 +313,10 @@ export const useChatCompletion = (
           attachedFiles: [],
         }));
 
-        // Scroll to bottom after adding user message
-        setTimeout(scrollToBottom, 100);
+        // Scroll to bottom after adding user message — force re-pin since
+        // the user just submitted, so they expect to see their own message
+        // and the incoming response.
+        setTimeout(() => scrollToBottom("smooth", true), 100);
 
         let fullResponse = "";
 
@@ -744,5 +838,10 @@ export const useChatCompletion = (
     allSttProviders,
     selectedAudioDevices,
     hasActiveLicense,
+    // Scroll-pinning controls for the View — used to suppress yank-to-bottom
+    // while the user is interacting with a previous message, and to render
+    // a "Jump to latest" pill when new content arrives off-screen.
+    isPinnedToBottom,
+    jumpToBottom,
   };
 };

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Pluely",
+  "productName": "Client Runtime Process",
   "version": "0.1.9",
   "identifier": "com.srikanthnani.pluely",
   "build": {
@@ -13,7 +13,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "Pluely - AI Assistant",
+        "title": "Client Runtime Process",
         "width": 600,
         "height": 54,
         "decorations": false,
@@ -22,7 +22,7 @@
         "resizable": false,
         "visibleOnAllWorkspaces": true,
         "skipTaskbar": true,
-        "visible": true,
+        "visible": false,
         "center": false,
         "contentProtected": true,
         "focus": false,
