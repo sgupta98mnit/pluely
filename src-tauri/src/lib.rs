@@ -6,6 +6,8 @@ mod db;
 mod shortcuts;
 mod window;
 use std::sync::{Arc, Mutex};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 #[cfg(target_os = "macos")]
 use tauri::{AppHandle, WebviewWindow};
@@ -29,6 +31,48 @@ pub struct AudioState {
 #[tauri::command]
 fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// Build the system tray icon and its context menu. Listed honestly as "Pluely".
+fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let toggle = MenuItem::with_id(app, "tray_toggle", "Show / Hide Pluely", true, None::<&str>)?;
+    let dashboard = MenuItem::with_id(app, "tray_dashboard", "Open Dashboard", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, "tray_quit", "Quit Pluely", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&toggle, &dashboard, &separator, &quit])?;
+
+    let mut builder = TrayIconBuilder::with_id("main-tray")
+        .tooltip("Pluely")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "tray_toggle" => shortcuts::handle_shortcut_action(app, "toggle_window"),
+            "tray_dashboard" => {
+                if let Err(e) = window::show_dashboard_window(app) {
+                    eprintln!("Failed to show dashboard from tray: {}", e);
+                }
+            }
+            "tray_quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            // Left click toggles the overlay; right click opens the menu.
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                shortcuts::handle_shortcut_action(tray.app_handle(), "toggle_window");
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    }
+
+    builder.build(app)?;
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -130,6 +174,12 @@ pub fn run() {
                 if let Err(e) = window::create_dashboard_window(&app_handle) {
                     eprintln!("Failed to pre-create dashboard window on startup: {}", e);
                 }
+            }
+
+            // System tray: the app runs as a background/tray app with no taskbar
+            // button, so the tray is the primary way to show/hide it and quit.
+            if let Err(e) = setup_tray(&app_handle) {
+                eprintln!("Failed to setup system tray: {}", e);
             }
 
             #[cfg(desktop)]

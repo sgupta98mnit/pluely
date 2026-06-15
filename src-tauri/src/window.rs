@@ -174,6 +174,9 @@ pub fn create_dashboard_window<R: Runtime>(
         .inner_size(800.0, 600.0)
         .min_inner_size(800.0, 600.0)
         .content_protected(true)
+        // Run as a background/tray app: no taskbar button. The window is reached
+        // via the tray menu or the toggle-dashboard shortcut.
+        .skip_taskbar(true)
         .visible(false);
 
     let window = base_builder.build()?;
