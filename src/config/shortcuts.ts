@@ -72,6 +72,17 @@ export const DEFAULT_SHORTCUT_ACTIONS: ShortcutAction[] = [
     },
   },
   {
+    id: "screenshot_attach",
+    name: "Attach Screenshot (queue for send)",
+    description:
+      "Capture a screenshot and add it to the input without submitting. Use to queue up multiple screenshots and send them together.",
+    defaultKey: {
+      macos: "cmd+shift+x",
+      windows: "ctrl+shift+x",
+      linux: "ctrl+shift+x",
+    },
+  },
+  {
     id: "toggle_fullscreen",
     name: "Toggle Fullscreen",
     description: "Expand/restore the AI response panel to fullscreen",

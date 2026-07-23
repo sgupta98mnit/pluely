@@ -91,6 +91,13 @@ export interface UseCompletionReturn {
   messageHistoryOpen: boolean;
   /** Function to control message history panel visibility */
   setMessageHistoryOpen: Dispatch<SetStateAction<boolean>>;
+  /**
+   * Persistent scroll offset for the message history ScrollArea, kept in
+   * a ref so it survives Radix Popover unmount (which happens on close /
+   * on Ctrl+Shift+I window toggle). MessageHistory reads it to restore
+   * scroll on open, and writes to it on scroll.
+   */
+  historyScrollTopRef: RefObject<number>;
   /** Whether keep engaged mode is active (keeps popover open for continuous conversation) */
   keepEngaged: boolean;
   /** Function to toggle keep engaged mode */

@@ -57,9 +57,20 @@ export const useCompletion = () => {
     selectedAIProvider,
     allAiProviders,
     systemPrompt,
+    contextText,
     screenshotConfiguration,
     setScreenshotConfiguration,
   } = useApp();
+
+  // Combines the active system prompt with the resume/documents/additional
+  // context text (if any) so every AI request is grounded in the user's
+  // provided background material.
+  const buildFinalSystemPrompt = useCallback(
+    (base?: string) => {
+      return [base, contextText].filter(Boolean).join("\n\n") || undefined;
+    },
+    [contextText]
+  );
   const globalShortcuts = useGlobalShortcuts();
 
   const [state, setState] = useState<CompletionState>({
@@ -73,7 +84,7 @@ export const useCompletion = () => {
   });
   const [micOpen, setMicOpen] = useState(false);
   const [enableVAD, setEnableVAD] = useState(false);
-  const [messageHistoryOpen, setMessageHistoryOpen] = useState(false);
+  const [messageHistoryOpen, setMessageHistoryOpenRaw] = useState(false);
   const [isFilesPopoverOpen, setIsFilesPopoverOpen] = useState(false);
   const [isScreenshotLoading, setIsScreenshotLoading] = useState(false);
   const [keepEngaged, setKeepEngaged] = useState(false);
@@ -82,6 +93,70 @@ export const useCompletion = () => {
   const screenshotConfigRef = useRef(screenshotConfiguration);
   const hasCheckedPermissionRef = useRef(false);
   const screenshotInitiatedByThisContext = useRef(false);
+
+  // --- Chat history popover persistence across Ctrl+Shift+I window toggles ---
+  //
+  // Radix Popover auto-closes when the webview loses focus, which is exactly
+  // what happens when the user toggles the window off with the global
+  // shortcut. That drops both the popover open state AND the scroll position
+  // inside the history (Radix unmounts closed popover content).
+  //
+  // We fix that by:
+  //   (a) Remembering the user's *intent* to have history open, and
+  //       suppressing Radix's implicit close during a brief window around any
+  //       toggle-window-visibility event.
+  //   (b) Persisting the ScrollArea's scrollTop in a ref so MessageHistory
+  //       can restore it on re-open.
+  const userIntentHistoryOpenRef = useRef(false);
+  const suppressHistoryCloseUntilRef = useRef(0);
+  const historyScrollTopRef = useRef(0);
+
+  const setMessageHistoryOpen: React.Dispatch<
+    React.SetStateAction<boolean>
+  > = useCallback((next) => {
+    setMessageHistoryOpenRaw((prev) => {
+      const nextVal =
+        typeof next === "function"
+          ? (next as (p: boolean) => boolean)(prev)
+          : next;
+      // Ignore Radix's "close" that fires from the focus loss when the
+      // Tauri window is being toggled off/on with the global shortcut —
+      // the user didn't ask to close the popover, they toggled the window.
+      if (!nextVal && Date.now() < suppressHistoryCloseUntilRef.current) {
+        return prev;
+      }
+      userIntentHistoryOpenRef.current = nextVal;
+      return nextVal;
+    });
+  }, []);
+
+  // Track window visibility toggles so we can (1) grant a grace period that
+  // suppresses the incidental Radix close, and (2) restore the popover when
+  // the user brings the window back.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        unlisten = await listen<boolean>(
+          "toggle-window-visibility",
+          (event) => {
+            const isHidden = event.payload === true;
+            // 800ms grace covers both the hide (Radix close from blur) and
+            // the show (any lingering focus-shuffle Radix might react to).
+            suppressHistoryCloseUntilRef.current = Date.now() + 800;
+            if (!isHidden && userIntentHistoryOpenRef.current) {
+              setMessageHistoryOpenRaw(true);
+            }
+          }
+        );
+      } catch (err) {
+        console.debug("toggle-window-visibility listener setup failed:", err);
+      }
+    })();
+    return () => {
+      unlisten?.();
+    };
+  }, []);
 
   const { resizeWindow } = useWindowResize();
 
@@ -235,7 +310,7 @@ export const useCompletion = () => {
           for await (const chunk of fetchAIResponse({
             provider: usePluelyAPI ? undefined : provider,
             selectedProvider: selectedAIProvider,
-            systemPrompt: systemPrompt || undefined,
+            systemPrompt: buildFinalSystemPrompt(systemPrompt),
             history: messageHistory,
             userMessage: input,
             imagesBase64,
@@ -320,6 +395,7 @@ export const useCompletion = () => {
       selectedAIProvider,
       allAiProviders,
       systemPrompt,
+      buildFinalSystemPrompt,
       state.conversationHistory,
     ]
   );
@@ -555,7 +631,8 @@ export const useCompletion = () => {
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    const MAX_FILES = 6;
+    // Use the shared MAX_FILES constant so raising the cap in one place
+    // (config/constants.ts) propagates everywhere.
 
     files.forEach((file) => {
       if (
@@ -650,8 +727,9 @@ export const useCompletion = () => {
             for await (const chunk of fetchAIResponse({
               provider: usePluelyAPI ? undefined : provider,
               selectedProvider: selectedAIProvider,
-              systemPrompt:
-                options?.systemPromptOverride || systemPrompt || undefined,
+              systemPrompt: buildFinalSystemPrompt(
+                options?.systemPromptOverride || systemPrompt
+              ),
               history: messageHistory,
               userMessage: prompt,
               imagesBase64: [base64],
@@ -739,6 +817,7 @@ export const useCompletion = () => {
       selectedAIProvider,
       allAiProviders,
       systemPrompt,
+      buildFinalSystemPrompt,
       saveCurrentConversation,
       inputRef,
     ]
@@ -927,10 +1006,22 @@ export const useCompletion = () => {
     [systemPrompt, handleScreenshotSubmit, screenshotConfiguration.autoPrompt]
   );
 
-  const captureScreenshot = useCallback(async () => {
+  // When the "Attach Screenshot (queue for send)" shortcut fires, we need to
+  // force attach-only behavior for the resulting capture — even if the user's
+  // saved Processing Mode is "auto". For screenshot mode we know the mode at
+  // capture time, but for selection mode there's an async round trip: the
+  // captured-selection listener runs later and needs to know that THIS
+  // capture was initiated by the attach shortcut. This ref carries that
+  // intent across the round trip.
+  const forceAttachOnNextCaptureRef = useRef(false);
+
+  const captureScreenshot = useCallback(async (
+    opts?: { forceAttach?: boolean }
+  ) => {
     if (!handleScreenshotSubmit) return;
 
     const config = screenshotConfigRef.current;
+    const forceAttach = opts?.forceAttach === true;
     screenshotInitiatedByThisContext.current = true;
     setIsScreenshotLoading(true);
 
@@ -971,13 +1062,34 @@ export const useCompletion = () => {
       if (config.enabled) {
         const base64 = await invoke("capture_to_base64");
 
-        // Ask AI button (screenshot mode) -> Generate Question -> Submit
-        // We Override the "mode" config here because "Ask AI" implies we want an answer.
-        await generateQuestionAndSubmit(base64 as string);
+        // Effective mode for THIS capture:
+        //   - forceAttach (from the "queue for send" shortcut) always wins
+        //   - otherwise respect the user's Processing Mode setting:
+        //       auto   → capture-and-send in one shot
+        //       manual → just attach; user submits later, possibly after
+        //                accumulating several shots
+        const attachOnly = forceAttach || config.mode === "manual";
+
+        if (attachOnly) {
+          await handleScreenshotSubmit(base64 as string);
+          // Open the Files popover briefly so the user gets visual
+          // confirmation that the shot landed (there's no response panel
+          // that would otherwise pop open in attach-only mode).
+          setIsFilesPopoverOpen(true);
+        } else {
+          // Ask AI button (screenshot mode) -> Generate Question -> Submit
+          // We override the "mode" config here because "Ask AI" implies we
+          // want an answer immediately.
+          await generateQuestionAndSubmit(base64 as string);
+        }
 
         screenshotInitiatedByThisContext.current = false;
       } else {
-        // Selection Mode: Open overlay to select an area
+        // Selection Mode: Open overlay to select an area. If this capture was
+        // triggered by the "queue for send" shortcut, we set the ref so the
+        // captured-selection listener (which runs later, once the user picks
+        // a region) knows to force attach-only regardless of settings.
+        forceAttachOnNextCaptureRef.current = forceAttach;
         isProcessingScreenshotRef.current = false;
         await invoke("start_screen_capture");
       }
@@ -1010,10 +1122,21 @@ export const useCompletion = () => {
 
         isProcessingScreenshotRef.current = true;
         const base64 = event.payload;
+        const config = screenshotConfigRef.current;
+        // Consume the "queue for send" flag set when start_screen_capture
+        // was invoked. This lets the attach shortcut force attach-only
+        // behavior even if the saved Processing Mode is "auto".
+        const forceAttach = forceAttachOnNextCaptureRef.current;
+        forceAttachOnNextCaptureRef.current = false;
 
         try {
-          // Selection Mode -> Generate Question -> Submit
-          await generateQuestionAndSubmit(base64 as string);
+          const attachOnly = forceAttach || config.mode === "manual";
+          if (attachOnly) {
+            await handleScreenshotSubmit(base64 as string);
+            setIsFilesPopoverOpen(true);
+          } else {
+            await generateQuestionAndSubmit(base64 as string);
+          }
         } catch (error) {
           console.error("Error processing selection:", error);
         } finally {
@@ -1063,17 +1186,36 @@ export const useCompletion = () => {
     };
   }, []);
 
+  // Wrapper that always attaches without submitting — bound to the
+  // "screenshot_attach" custom shortcut so users can queue up several
+  // screenshots and send them together, regardless of the saved
+  // auto/manual Processing Mode.
+  const captureScreenshotAttach = useCallback(
+    () => captureScreenshot({ forceAttach: true }),
+    [captureScreenshot]
+  );
+
   // register callbacks for global shortcuts
   useEffect(() => {
     globalShortcuts.registerAudioCallback(toggleRecording);
     globalShortcuts.registerInputRef(inputRef.current);
     globalShortcuts.registerScreenshotCallback(captureScreenshot);
+    globalShortcuts.registerCustomShortcutCallback(
+      "screenshot_attach",
+      captureScreenshotAttach
+    );
+    return () => {
+      globalShortcuts.unregisterCustomShortcutCallback("screenshot_attach");
+    };
   }, [
     globalShortcuts.registerAudioCallback,
     globalShortcuts.registerInputRef,
     globalShortcuts.registerScreenshotCallback,
+    globalShortcuts.registerCustomShortcutCallback,
+    globalShortcuts.unregisterCustomShortcutCallback,
     toggleRecording,
     captureScreenshot,
+    captureScreenshotAttach,
     inputRef,
   ]);
 
@@ -1102,6 +1244,7 @@ export const useCompletion = () => {
     startNewConversation,
     messageHistoryOpen,
     setMessageHistoryOpen,
+    historyScrollTopRef,
     screenshotConfiguration,
     setScreenshotConfiguration,
     handleScreenshotSubmit,
