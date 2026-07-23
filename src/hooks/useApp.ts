@@ -73,29 +73,59 @@ export const useApp = () => {
   };
 
   // WINDOWS HIDE/SHOW TOGGLE WINDOW WORKAROUND FOR SHORTCUTS
+  //
+  // On Windows the toggle_window shortcut doesn't actually hide the native
+  // window in the Rust handler — it only flips a shared `is_hidden` flag and
+  // emits `toggle-window-visibility`. To make the window *look* hidden, this
+  // listener force-closes any open popover by writing inline styles directly
+  // on the DOM (display:none !important, data-state=closed). Radix's own
+  // controlled `open` prop isn't touched, so its React state stays "open".
+  //
+  // Critical: on the SHOW event we MUST undo those inline overrides,
+  // otherwise the popover reopens with distorted layout — Radix's positioning
+  // and animation state won't match the stale inline `display:none` /
+  // `data-state=closed` still sitting on the element. That's what causes the
+  // "formatting is fine on first open, distorted after Ctrl+Shift+I toggle"
+  // regression.
   useEffect(() => {
     const unlistenPromise = listen<boolean>(
       "toggle-window-visibility",
       (event) => {
         const platform = navigator.platform.toLowerCase();
-        if (typeof event.payload === "boolean" && platform.includes("win")) {
-          setIsHidden(!event.payload);
-          // find popover open and close it
-          const popover = document.getElementById("popover-content");
-          // set display to none, change data-state to closed
-          if (popover) {
-            popover.style.setProperty("display", "none", "important");
-            // update the data-state to closed
-            popover.setAttribute("data-state", "closed");
+        if (typeof event.payload !== "boolean" || !platform.includes("win")) {
+          return;
+        }
+        const isNowHidden = event.payload; // true = window just hidden
+        setIsHidden(!isNowHidden);
 
-            // Also find and update the popover trigger's data-state
-            const popoverTriggers = document.querySelectorAll(
-              '[data-slot="popover-trigger"]'
-            );
-            popoverTriggers.forEach((trigger) => {
-              trigger.setAttribute("data-state", "closed");
-            });
-          }
+        // Catch every popover (there are multiple in the tree — the response
+        // panel and the nested chat history) — the old code only touched the
+        // first #popover-content match, which is invalid HTML anyway.
+        const popovers = document.querySelectorAll<HTMLElement>(
+          '[data-slot="popover-content"], #popover-content'
+        );
+        const triggers = document.querySelectorAll<HTMLElement>(
+          '[data-slot="popover-trigger"]'
+        );
+
+        if (isNowHidden) {
+          popovers.forEach((el) => {
+            el.style.setProperty("display", "none", "important");
+            el.setAttribute("data-state", "closed");
+          });
+          triggers.forEach((el) => el.setAttribute("data-state", "closed"));
+        } else {
+          // Window is coming back — drop the forced-close overrides so
+          // Radix's own render can drive display + data-state. React state
+          // for the popovers is preserved (see useCompletion window-visibility
+          // handler), so Radix will re-render with the correct data-state on
+          // its next commit; removing the inline overrides here lets that
+          // render actually reach the DOM.
+          popovers.forEach((el) => {
+            el.style.removeProperty("display");
+            el.removeAttribute("data-state");
+          });
+          triggers.forEach((el) => el.removeAttribute("data-state"));
         }
       }
     );

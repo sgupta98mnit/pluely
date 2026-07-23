@@ -26,6 +26,7 @@ export const Input = ({
   startNewConversation,
   messageHistoryOpen,
   setMessageHistoryOpen,
+  historyScrollTopRef,
   error,
   response,
   cancel,
@@ -74,6 +75,7 @@ export const Input = ({
                     onStartNewConversation={startNewConversation}
                     messageHistoryOpen={messageHistoryOpen}
                     setMessageHistoryOpen={setMessageHistoryOpen}
+                    historyScrollTopRef={historyScrollTopRef}
                   />
                 </div>
               )}

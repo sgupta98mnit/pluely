@@ -1,4 +1,5 @@
 import { MessageSquareText, ChevronUp, ChevronDown } from "lucide-react";
+import { useEffect, useRef, MutableRefObject } from "react";
 import {
   Popover,
   PopoverContent,
@@ -15,6 +16,13 @@ interface MessageHistoryProps {
   onStartNewConversation: () => void;
   messageHistoryOpen: boolean;
   setMessageHistoryOpen: (open: boolean) => void;
+  /**
+   * Ref used to persist the ScrollArea's scrollTop across open/close cycles
+   * (Radix unmounts closed popover content, and the Ctrl+Shift+I window
+   * toggle closes the popover incidentally). Read on open to restore the
+   * scroll position; written on every scroll.
+   */
+  historyScrollTopRef?: MutableRefObject<number>;
 }
 
 export const MessageHistory = ({
@@ -22,7 +30,54 @@ export const MessageHistory = ({
   onStartNewConversation,
   messageHistoryOpen,
   setMessageHistoryOpen,
+  historyScrollTopRef,
 }: MessageHistoryProps) => {
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
+
+  // Restore & wire up scroll persistence whenever the popover opens.
+  // Radix mounts a fresh ScrollArea DOM subtree on each open, so we find
+  // the viewport, seek it to the last saved offset, and attach a scroll
+  // listener that keeps historyScrollTopRef in sync.
+  useEffect(() => {
+    if (!messageHistoryOpen || !historyScrollTopRef) return;
+
+    let raf = 0;
+    let scrollEl: HTMLElement | null = null;
+    let onScroll: (() => void) | null = null;
+    let attachTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const attach = () => {
+      const root = scrollAreaRef.current;
+      // Radix ScrollArea exposes the scrolling element with this attribute.
+      const el = root?.querySelector(
+        "[data-radix-scroll-area-viewport]"
+      ) as HTMLElement | null;
+      if (!el) {
+        attachTimer = setTimeout(attach, 50);
+        return;
+      }
+      scrollEl = el;
+      // Restore after paint so content has real height and scrollTop sticks.
+      raf = requestAnimationFrame(() => {
+        el.scrollTop = historyScrollTopRef.current ?? 0;
+      });
+      onScroll = () => {
+        historyScrollTopRef.current = el.scrollTop;
+      };
+      el.addEventListener("scroll", onScroll, { passive: true });
+    };
+
+    attach();
+
+    return () => {
+      if (attachTimer) clearTimeout(attachTimer);
+      if (raf) cancelAnimationFrame(raf);
+      if (scrollEl && onScroll) {
+        scrollEl.removeEventListener("scroll", onScroll);
+      }
+    };
+  }, [messageHistoryOpen, historyScrollTopRef]);
+
   return (
     <Popover open={messageHistoryOpen} onOpenChange={setMessageHistoryOpen}>
       <PopoverTrigger asChild>
@@ -81,7 +136,7 @@ export const MessageHistory = ({
           </div>
         </div>
 
-        <ScrollArea className="h-[calc(100vh-10rem)]">
+        <ScrollArea ref={scrollAreaRef} className="h-[calc(100vh-10rem)]">
           <div className="p-4 space-y-4">
             {conversationHistory
               .sort((a, b) => b?.timestamp - a?.timestamp)

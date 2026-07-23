@@ -28,6 +28,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -302,7 +303,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const updateCursor = (type: CursorType | undefined) => {
+  // The user's desired cursor type, and whether the overlay window is
+  // currently focused. We only ever apply a custom/invisible cursor while the
+  // overlay is genuinely focused — otherwise the pointer would vanish over the
+  // transparent always-on-top window even when the user isn't using it.
+  const cursorDesiredRef = useRef<CursorType | undefined>(undefined);
+  const cursorActiveRef = useRef(false);
+
+  const applyCursor = () => {
     try {
       const currentWindow = getCurrentWindow();
       const platform = getPlatform();
@@ -319,13 +327,25 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         return;
       }
 
-      // For overlay windows (main, capture-overlay-*)
-      const safeType = type || "invisible";
-      const cursorValue = type === "invisible" ? "none" : safeType;
+      // For overlay windows (main, capture-overlay-*): only apply the custom
+      // cursor while focused. When blurred or hidden, restore the real OS cursor
+      // so it never disappears over the window's screen area.
+      if (!cursorActiveRef.current) {
+        document.documentElement.style.setProperty("--cursor-type", "default");
+        return;
+      }
+
+      const desired = cursorDesiredRef.current || "invisible";
+      const cursorValue = desired === "invisible" ? "none" : desired;
       document.documentElement.style.setProperty("--cursor-type", cursorValue);
     } catch (error) {
       document.documentElement.style.setProperty("--cursor-type", "default");
     }
+  };
+
+  const updateCursor = (type: CursorType | undefined) => {
+    cursorDesiredRef.current = type;
+    applyCursor();
   };
 
   // Load data on mount
@@ -348,6 +368,53 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     // Load data
     loadData();
     initializeApp();
+  }, []);
+
+  // Keep the overlay cursor in sync with the window's focus state. A custom or
+  // invisible cursor should only take effect while the overlay is focused; once
+  // it's blurred or hidden we restore the real OS cursor.
+  useEffect(() => {
+    const currentWindow = getCurrentWindow();
+    if (currentWindow.label === "dashboard") return;
+
+    let unlistenFocus: (() => void) | undefined;
+    let unlistenToggle: (() => void) | undefined;
+
+    const setup = async () => {
+      try {
+        cursorActiveRef.current = await currentWindow.isFocused();
+        applyCursor();
+      } catch {
+        // ignore — applyCursor already falls back to the default cursor
+      }
+
+      unlistenFocus = await currentWindow.onFocusChanged(
+        ({ payload: focused }) => {
+          cursorActiveRef.current = focused;
+          applyCursor();
+        }
+      );
+
+      // The hide/show shortcut hides the window without always firing a blur
+      // event, so restore the OS cursor explicitly when it goes hidden.
+      // Payload is `is_hidden` (true = now hidden) per the Rust handler.
+      unlistenToggle = await listen<boolean>(
+        "toggle-window-visibility",
+        (event) => {
+          if (event.payload === true) {
+            cursorActiveRef.current = false;
+            applyCursor();
+          }
+        }
+      );
+    };
+
+    setup();
+
+    return () => {
+      unlistenFocus?.();
+      unlistenToggle?.();
+    };
   }, []);
 
   // Handle customizable settings on state changes

@@ -174,6 +174,9 @@ pub fn create_dashboard_window<R: Runtime>(
         .inner_size(800.0, 600.0)
         .min_inner_size(800.0, 600.0)
         .content_protected(true)
+        // Run as a background/tray app: no taskbar button. The window is reached
+        // via the tray menu or the toggle-dashboard shortcut.
+        .skip_taskbar(true)
         .visible(false);
 
     let window = base_builder.build()?;
@@ -220,5 +223,70 @@ pub fn show_dashboard_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), Strin
             .set_focus()
             .map_err(|e| format!("Failed to focus new dashboard window: {}", e))?;
     }
+    Ok(())
+}
+
+/// Saved overlay window geometry so fullscreen can be restored to the exact
+/// pre-fullscreen position and size.
+#[derive(Default)]
+pub struct OverlayFullscreenState {
+    pub(crate) saved: std::sync::Mutex<Option<(tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>)>>,
+}
+
+/// Expand the main overlay window to the current monitor's work area
+/// (taskbar/menubar stay visible), or restore it to the saved geometry.
+#[tauri::command]
+pub fn set_overlay_fullscreen(
+    window: tauri::WebviewWindow,
+    state: tauri::State<OverlayFullscreenState>,
+    enabled: bool,
+) -> Result<(), String> {
+    use tauri::{Position, Size};
+
+    if enabled {
+        let pos = window
+            .outer_position()
+            .map_err(|e| format!("Failed to read window position: {}", e))?;
+        let size = window
+            .outer_size()
+            .map_err(|e| format!("Failed to read window size: {}", e))?;
+        {
+            let mut saved = match state.saved.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            *saved = Some((pos, size));
+        }
+
+        let monitor = window
+            .current_monitor()
+            .map_err(|e| format!("Failed to get current monitor: {}", e))?
+            .ok_or_else(|| "No current monitor available".to_string())?;
+        let area = monitor.work_area();
+
+        window
+            .set_size(Size::Physical(area.size))
+            .map_err(|e| format!("Failed to resize fullscreen window: {}", e))?;
+        window
+            .set_position(Position::Physical(area.position))
+            .map_err(|e| format!("Failed to position fullscreen window: {}", e))?;
+    } else {
+        let saved = {
+            let mut guard = match state.saved.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard.take()
+        };
+        if let Some((pos, size)) = saved {
+            window
+                .set_size(Size::Physical(size))
+                .map_err(|e| format!("Failed to restore window size: {}", e))?;
+            window
+                .set_position(Position::Physical(pos))
+                .map_err(|e| format!("Failed to restore window position: {}", e))?;
+        }
+    }
+
     Ok(())
 }

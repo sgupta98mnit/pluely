@@ -10,6 +10,7 @@ import {
 import { getConversationById } from "@/lib";
 import { ChatConversation, ChatMessage } from "@/types";
 import {
+  ArrowDown,
   Download,
   MessageCircleIcon,
   MessageCircleReplyIcon,
@@ -75,7 +76,7 @@ const ChatMessageRow = memo(
             }`}
           >
             <Card
-              className={`p-3 text-xs lg:text-sm transition-all shadow-none ${
+              className={`p-3 text-xs lg:text-sm transition-all shadow-none select-text cursor-text ${
                 isUser
                   ? "!bg-primary text-primary-foreground !border-primary rounded-tr-sm"
                   : "!bg-muted/50 dark:!bg-muted/30 rounded-tl-sm"
@@ -146,16 +147,24 @@ const View = () => {
     getMessages();
   }, [conversationId]);
 
+  // Track which conversation we've already done the initial scroll for, so
+  // we only jump to the bottom on first load (or when switching conversations)
+  // — not on every appended message. Mid-stream autoscroll is handled inside
+  // the completion hook and respects the user's scroll position.
+  const [initialScrollDoneFor, setInitialScrollDoneFor] = useState<
+    string | null
+  >(null);
   useEffect(() => {
-    // Scroll to bottom when messages load
-    if (messages?.messages.length) {
-      setTimeout(() => {
-        completion.messagesEndRef.current?.scrollIntoView({
-          behavior: "smooth",
-        });
-      }, 100);
-    }
-  }, [messages?.messages.length]);
+    const id = messages?.id;
+    if (!id) return;
+    if (initialScrollDoneFor === id) return;
+    if (!messages?.messages.length) return;
+    setTimeout(() => {
+      completion.jumpToBottom();
+      setInitialScrollDoneFor(id);
+    }, 100);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages?.id, messages?.messages.length]);
 
   // Handle initial state from "Ask AI"
   useEffect(() => {
@@ -264,6 +273,22 @@ const View = () => {
           })}
           <div ref={completion.messagesEndRef} />
         </div>
+      )}
+
+      {/* "Jump to latest" pill — visible only when the user has scrolled up
+          and the streaming response is leaving them behind. Clicking it
+          re-pins the viewport to the bottom and resumes autoscroll. This
+          lets the user pause autoscroll just by scrolling up to read or
+          select a previous question, without losing their place. */}
+      {!completion.isPinnedToBottom && (
+        <button
+          onClick={() => completion.jumpToBottom()}
+          className="absolute left-1/2 -translate-x-1/2 bottom-28 z-50 flex items-center gap-1.5 rounded-full border border-border bg-background/90 backdrop-blur px-3 py-1.5 text-xs shadow-md hover:bg-background transition-colors"
+          title="Jump to latest message"
+        >
+          <ArrowDown className="size-3" />
+          {completion.isLoading ? "New response below" : "Jump to latest"}
+        </button>
       )}
 
       {/* Sticky Footer Input */}

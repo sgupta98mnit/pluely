@@ -202,7 +202,24 @@ fn handle_toggle_window<R: Runtime>(app: &AppHandle<R>) {
             eprintln!("Failed to emit toggle-window-visibility event: {}", e);
         }
 
-        if !*is_hidden {
+        if *is_hidden {
+            // Actually hide the native window on Windows.
+            //
+            // Previously this branch only flipped the shared flag and left
+            // the window visible, relying on the frontend to display:none the
+            // popover DOM. That "fake hide" works OK for the 54px input bar
+            // but is broken in fullscreen: the window is transparent + covers
+            // the whole monitor, so its webview keeps capturing every click
+            // even though nothing is drawn. Result: after Ctrl+Shift+I in
+            // fullscreen, the desktop is unclickable until you toggle again.
+            //
+            // Actually hiding the window releases the mouse events. Tauri
+            // preserves size/position across hide/show, so fullscreen state
+            // (or compact size) is restored automatically on the next show.
+            if let Err(e) = window.hide() {
+                eprintln!("Failed to hide window: {}", e);
+            }
+        } else {
             if let Err(e) = window.show() {
                 eprintln!("Failed to show window: {}", e);
             }
@@ -696,6 +713,18 @@ fn handle_focus_input<R: Runtime>(app: &AppHandle<R>) {
 }
 
 fn handle_move_window<R: Runtime>(app: &AppHandle<R>, direction: &str) {
+    // Fullscreen owns the overlay geometry; ignore move-window while active.
+    {
+        let fullscreen_state = app.state::<crate::window::OverlayFullscreenState>();
+        let is_fullscreen = match fullscreen_state.saved.lock() {
+            Ok(guard) => guard.is_some(),
+            Err(poisoned) => poisoned.into_inner().is_some(),
+        };
+        if is_fullscreen {
+            return;
+        }
+    }
+
     if let Some(window) = app.get_webview_window("main") {
         match window.outer_position() {
             Ok(current_pos) => {
