@@ -81,6 +81,29 @@ export interface STTParams {
     variables: Record<string, string>;
   };
   audio: File | Blob;
+  // Trimmed resume/context text (from useApp().contextText) mixed into the
+  // Whisper-style domain prompt so names, employers, and technologies from
+  // the candidate's own background are biased toward correct recognition.
+  contextHint?: string;
+}
+
+// Whisper's `prompt` field has a small budget (~224 tokens, well under
+// Whisper's context window). STT_DOMAIN_PROMPT already uses a good chunk of
+// that, so any resume/context text gets truncated to leave room for it.
+const MAX_CONTEXT_HINT_CHARS = 300;
+
+function buildDomainPrompt(contextHint?: string): string {
+  if (!contextHint) return STT_DOMAIN_PROMPT;
+
+  const cleaned = contextHint
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_CONTEXT_HINT_CHARS);
+
+  if (!cleaned) return STT_DOMAIN_PROMPT;
+
+  return `${STT_DOMAIN_PROMPT} The speaker's background: ${cleaned}`;
 }
 
 /**
@@ -90,7 +113,7 @@ export async function fetchSTT(params: STTParams): Promise<string> {
   let warnings: string[] = [];
 
   try {
-    const { provider, selectedProvider, audio } = params;
+    const { provider, selectedProvider, audio, contextHint } = params;
 
     // Check if we should use Pluely API instead
     const usePluelyAPI = await shouldUsePluelyAPI();
@@ -134,7 +157,9 @@ export async function fetchSTT(params: STTParams): Promise<string> {
 
     // Domain vocabulary hint for Whisper-style providers that reference
     // {{PROMPT}} in their curl. Harmless for providers that don't use it.
-    allVariables.PROMPT = STT_DOMAIN_PROMPT;
+    // Merges in the candidate's resume/context text (if any) so names,
+    // employers, and technologies specific to them bias correctly.
+    allVariables.PROMPT = buildDomainPrompt(contextHint);
 
     // Prepare request
     let url = deepVariableReplacer(curlJson.url || "", allVariables);

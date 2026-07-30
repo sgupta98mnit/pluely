@@ -22,7 +22,7 @@ const AutoSpeechVADInternal = ({
   microphoneDeviceId,
 }: AutoSpeechVADProps) => {
   const [isTranscribing, setIsTranscribing] = useState(false);
-  const { selectedSttProvider, allSttProviders } = useApp();
+  const { selectedSttProvider, allSttProviders, contextText } = useApp();
 
   // Enable the browser's acoustic echo canceller + noise suppression so the
   // mic doesn't transcribe what the speakers are playing (the other party on a
@@ -44,6 +44,10 @@ const AutoSpeechVADInternal = ({
     // speech ended, so a natural mid-sentence pause doesn't get chopped into
     // fragments ("So,", "of the") that each fire a separate question.
     redemptionFrames: 14,
+    // Keep more audio from just before speech was detected (default is 1
+    // frame, ~32ms) so quick/soft word starts aren't clipped off the front
+    // of the recording before STT ever sees them.
+    preSpeechPadFrames: 4,
     additionalAudioConstraints: audioConstraints,
     onSpeechEnd: async (audio) => {
       try {
@@ -85,6 +89,7 @@ const AutoSpeechVADInternal = ({
           provider: usePluelyAPI ? undefined : providerConfig,
           selectedProvider: selectedSttProvider,
           audio: audioBlob,
+          contextHint: contextText,
         });
 
         // Skip empty/too-short/filler results so we don't burn an AI call on

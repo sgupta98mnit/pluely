@@ -33,7 +33,9 @@ import {
   ChatScreenshot,
   ChatFiles,
   AudioRecorder,
+  ShortcutsHelp,
 } from ".";
+import { useShortcuts } from "@/hooks";
 
 // Memoized so that during streaming only the row whose content actually
 // changed re-renders (and re-parses its markdown), instead of re-parsing every
@@ -138,6 +140,12 @@ const View = () => {
     setMessages
   );
 
+  // Route the global screenshot shortcut into this chat page while it's
+  // mounted. Rust emits `trigger-screenshot` to the focused window; without
+  // this registration the dashboard would receive the event but drop it,
+  // leaving Ctrl+Shift+S feeling like a no-op on the chat page.
+  useShortcuts({ onScreenshot: completion.captureScreenshot });
+
   useEffect(() => {
     const getMessages = async () => {
       if (conversationId === "new") return;
@@ -196,6 +204,7 @@ const View = () => {
       description={`${messages?.messages.length} messages in this conversation`}
       rightSlot={
         <div className="flex flex-row items-center gap-2">
+          <ShortcutsHelp />
           <Button
             variant="outline"
             title="Open this conversation in overlay"

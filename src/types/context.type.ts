@@ -5,6 +5,8 @@ import { CursorType, CustomizableState } from "@/lib/storage";
 export type IContextType = {
   systemPrompt: string;
   setSystemPrompt: Dispatch<SetStateAction<string>>;
+  contextText: string;
+  refreshContextText: () => Promise<void>;
   allAiProviders: TYPE_PROVIDER[];
   customAiProviders: TYPE_PROVIDER[];
   selectedAIProvider: {

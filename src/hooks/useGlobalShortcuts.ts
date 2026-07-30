@@ -13,6 +13,13 @@ let globalEventListeners: {
   registrationError?: UnlistenFn;
 } = {};
 
+// Guards listener setup so it runs exactly once per webview, no matter how many
+// components call this hook. Without this, every hook instance races through the
+// async cleanup-then-listen block below: they all see the same empty
+// `globalEventListeners`, all call `listen()`, and only the last unlisten fn
+// survives — leaving orphaned listeners that fire the callback N times.
+let setupPromise: Promise<void> | null = null;
+
 // Global debounce for screenshot events to prevent duplicates
 let lastScreenshotEventTime = 0;
 
@@ -252,7 +259,15 @@ export const useGlobalShortcuts = () => {
       }
     };
 
-    setupEventListeners();
+    // Only the first caller performs setup; later callers reuse the same
+    // listeners via the module-level callback refs.
+    if (!setupPromise) {
+      setupPromise = setupEventListeners().catch((error) => {
+        // Allow a retry on the next mount if setup failed outright.
+        setupPromise = null;
+        throw error;
+      });
+    }
   }, []);
 
   return {

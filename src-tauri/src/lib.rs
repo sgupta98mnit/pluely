@@ -128,6 +128,7 @@ pub fn run() {
             window::toggle_dashboard,
             window::move_window,
             window::set_overlay_fullscreen,
+            window::get_capture_visible,
             capture::capture_to_base64,
             capture::start_screen_capture,
             capture::capture_selected_area,
@@ -262,8 +263,15 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_macos_permissions::init());
     }
 
+    let mut context = tauri::generate_context!();
+
+    // Dev-only: honour PLUELY_CAPTURABLE before any window is created, so
+    // windows are built without content protection rather than having it
+    // toggled off afterwards (which blanks WebView2 on Windows).
+    window::apply_dev_capture_config(&mut context);
+
     builder
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }
 

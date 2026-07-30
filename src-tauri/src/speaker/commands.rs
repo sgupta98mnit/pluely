@@ -26,6 +26,27 @@ pub struct VadConfig {
     pub pre_speech_chunks: usize,
     pub noise_gate_threshold: f32,
     pub max_recording_duration_secs: u64,
+    /// Emit "speech-partial" events with the in-progress buffer while the
+    /// speaker is still talking, so the UI can show a live transcript preview.
+    /// Off by default: each partial costs an extra STT request.
+    #[serde(default)]
+    pub partial_transcripts: bool,
+    /// Seconds between partial emissions while in speech.
+    #[serde(default = "default_partial_interval")]
+    pub partial_interval_secs: u64,
+    /// Measure the room's noise floor at capture start and raise detection
+    /// thresholds if the environment is noisier than the configured values.
+    /// Never lowers thresholds below the user's settings.
+    #[serde(default = "default_true")]
+    pub auto_calibrate: bool,
+}
+
+fn default_partial_interval() -> u64 {
+    3
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for VadConfig {
@@ -35,11 +56,15 @@ impl Default for VadConfig {
             hop_size: 1024,
             sensitivity_rms: 0.012, // Much less sensitive - only real speech
             peak_threshold: 0.035,  // Higher threshold - filters clicks/noise
-            silence_chunks: 45,     // ~1.0s of silence before stopping
+            silence_chunks: 70,     // ~1.5s of silence before stopping - a thinking
+            // pause mid-question no longer splits it into two half segments
             min_speech_chunks: 7,   // ~0.16s - captures short answers
-            pre_speech_chunks: 12,  // ~0.27s - enough to catch word start
+            pre_speech_chunks: 18,  // ~0.4s - wider pre-roll so soft/fast word starts aren't clipped
             noise_gate_threshold: 0.003, // Stronger noise filtering
             max_recording_duration_secs: 180, // 3 minutes default
+            partial_transcripts: false,
+            partial_interval_secs: 3,
+            auto_calibrate: true,
         }
     }
 }
@@ -140,13 +165,45 @@ async fn run_vad_capture(
 ) {
     let mut stream = stream;
     let mut buffer: VecDeque<f32> = VecDeque::new();
-    let mut pre_speech: VecDeque<f32> =
-        VecDeque::with_capacity(config.pre_speech_chunks * config.hop_size);
+
+    // Chunk-count settings were tuned for 48kHz / hop 1024 (~46.9 chunks/s).
+    // Rescale them to the actual stream rate so "1.5s of silence" means 1.5s
+    // on every device - at 16kHz the old raw counts tripled every duration,
+    // and at 96kHz they halved (cutting questions off mid-sentence).
+    let ref_chunks_per_sec = 48_000.0 / config.hop_size as f32;
+    let chunks_per_sec = sr as f32 / config.hop_size as f32;
+    let scale = chunks_per_sec / ref_chunks_per_sec;
+    let silence_hold_chunks = ((config.silence_chunks as f32 * scale).round() as usize).max(1);
+    let min_speech_chunks = ((config.min_speech_chunks as f32 * scale).round() as usize).max(1);
+    let pre_speech_samples =
+        ((config.pre_speech_chunks as f32 * scale).round() as usize).max(1) * config.hop_size;
+
+    let mut pre_speech: VecDeque<f32> = VecDeque::with_capacity(pre_speech_samples);
     let mut speech_buffer = Vec::new();
     let mut in_speech = false;
     let mut silence_chunks = 0;
     let mut speech_chunks = 0;
     let max_samples = sr as usize * 30; // 30s safety cap per utterance
+
+    // Auto-calibration: watch the first ~1s of audio and, if the room is
+    // noisier than the configured thresholds assume, raise them. The MINIMUM
+    // chunk RMS is the floor estimate, so someone already talking during the
+    // window can't inflate it. Thresholds are only ever raised, never lowered
+    // below the user's settings.
+    let calibrate_chunks = if config.auto_calibrate {
+        chunks_per_sec.ceil() as usize
+    } else {
+        0
+    };
+    let mut calibrated = 0usize;
+    let mut noise_floor = f32::MAX;
+    let mut rms_threshold = config.sensitivity_rms;
+    let mut peak_threshold = config.peak_threshold;
+    let mut gate_threshold = config.noise_gate_threshold;
+
+    // Live partial-transcript pacing (opt-in; each partial costs an STT call)
+    let partial_every_samples = (sr as u64 * config.partial_interval_secs.max(1)) as usize;
+    let mut next_partial_at = partial_every_samples;
 
     while let Some(sample) = stream.next().await {
         buffer.push_back(sample);
@@ -160,11 +217,33 @@ async fn run_vad_capture(
                 }
             }
 
-            // Apply noise gate BEFORE VAD (critical for accuracy)
-            let mono = apply_noise_gate(&mono, config.noise_gate_threshold);
-
+            // Measure on the RAW chunk - gating first attenuated quiet speech
+            // and made soft word endings look like silence (premature cutoffs).
             let (rms, peak) = calculate_audio_metrics(&mono);
-            let is_speech = rms > config.sensitivity_rms || peak > config.peak_threshold;
+
+            // Auto-calibration window: refine the noise-floor estimate, then
+            // lift thresholds once when the window completes.
+            if calibrated < calibrate_chunks {
+                calibrated += 1;
+                noise_floor = noise_floor.min(rms);
+                if calibrated == calibrate_chunks && noise_floor.is_finite() {
+                    rms_threshold = rms_threshold.max(noise_floor * 3.0);
+                    peak_threshold = peak_threshold.max(noise_floor * 6.0);
+                    gate_threshold = gate_threshold.max(noise_floor * 1.5);
+                }
+            }
+
+            // Noise gate only shapes what we store, not what we detect
+            let mono = apply_noise_gate(&mono, gate_threshold);
+
+            // Hysteresis: harder to START a segment than to CONTINUE one.
+            // Quiet passages mid-sentence (trailing syllables, soft speakers)
+            // no longer count as silence and split the question in half.
+            let is_speech = if in_speech {
+                rms > rms_threshold * 0.5 || peak > peak_threshold * 0.5
+            } else {
+                rms > rms_threshold || peak > peak_threshold
+            };
 
             if is_speech {
                 if !in_speech {
@@ -182,7 +261,20 @@ async fn run_vad_capture(
                 speech_buffer.extend_from_slice(&mono);
                 silence_chunks = 0; // Reset silence counter on any speech
 
-                // Safety cap: force emit if exceeds 30s
+                // Live preview: periodically ship the buffer-so-far so the UI
+                // can transcribe it while the speaker is still talking.
+                if config.partial_transcripts && speech_buffer.len() >= next_partial_at {
+                    next_partial_at += partial_every_samples;
+                    let normalized = normalize_audio_level(&speech_buffer, 0.1);
+                    if let Ok(b64) = samples_to_wav_b64(sr, &normalized) {
+                        let _ = app.emit("speech-partial", b64);
+                    }
+                }
+
+                // Safety cap: force emit if exceeds 30s. Stay in_speech so the
+                // ongoing utterance keeps recording seamlessly - dropping to
+                // idle here required re-triggering the (higher) start
+                // threshold and lost audio mid-word.
                 if speech_buffer.len() > max_samples {
                     let normalized_buffer = normalize_audio_level(&speech_buffer, 0.1);
                     if let Ok(b64) = samples_to_wav_b64(sr, &normalized_buffer) {
@@ -190,8 +282,9 @@ async fn run_vad_capture(
                         let _ = app.emit("speech-detected", b64);
                     }
                     speech_buffer.clear();
-                    in_speech = false;
-                    speech_chunks = 0;
+                    speech_chunks = 1;
+                    silence_chunks = 0;
+                    next_partial_at = partial_every_samples;
                 }
             } else {
                 // Silence detected
@@ -202,9 +295,9 @@ async fn run_vad_capture(
                     speech_buffer.extend_from_slice(&mono);
 
                     // Check if silence duration exceeds threshold
-                    if silence_chunks >= config.silence_chunks {
+                    if silence_chunks >= silence_hold_chunks {
                         // Verify minimum speech duration
-                        if speech_chunks >= config.min_speech_chunks && !speech_buffer.is_empty() {
+                        if speech_chunks >= min_speech_chunks && !speech_buffer.is_empty() {
                             // Trim trailing silence (keep ~0.15s for natural ending)
                             let silence_duration_samples = silence_chunks * config.hop_size;
                             let keep_silence_samples = (sr as usize) * 15 / 100; // 0.15s
@@ -236,18 +329,19 @@ async fn run_vad_capture(
                         in_speech = false;
                         silence_chunks = 0;
                         speech_chunks = 0;
+                        next_partial_at = partial_every_samples;
                     }
                 } else {
                     // Not in speech yet - maintain rolling pre-speech buffer
                     pre_speech.extend(mono.into_iter());
 
                     // Trim excess (maintain fixed size)
-                    while pre_speech.len() > config.pre_speech_chunks * config.hop_size {
+                    while pre_speech.len() > pre_speech_samples {
                         pre_speech.pop_front();
                     }
 
                     // Periodically shrink capacity to prevent memory bloat
-                    if pre_speech.len() == config.pre_speech_chunks * config.hop_size {
+                    if pre_speech.len() == pre_speech_samples {
                         pre_speech.shrink_to_fit();
                     }
                 }

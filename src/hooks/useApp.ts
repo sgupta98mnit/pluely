@@ -72,21 +72,10 @@ export const useApp = () => {
     window.dispatchEvent(new CustomEvent("newConversation"));
   };
 
-  // WINDOWS HIDE/SHOW TOGGLE WINDOW WORKAROUND FOR SHORTCUTS
-  //
-  // On Windows the toggle_window shortcut doesn't actually hide the native
-  // window in the Rust handler — it only flips a shared `is_hidden` flag and
-  // emits `toggle-window-visibility`. To make the window *look* hidden, this
-  // listener force-closes any open popover by writing inline styles directly
-  // on the DOM (display:none !important, data-state=closed). Radix's own
-  // controlled `open` prop isn't touched, so its React state stays "open".
-  //
-  // Critical: on the SHOW event we MUST undo those inline overrides,
-  // otherwise the popover reopens with distorted layout — Radix's positioning
-  // and animation state won't match the stale inline `display:none` /
-  // `data-state=closed` still sitting on the element. That's what causes the
-  // "formatting is fine on first open, distorted after Ctrl+Shift+I toggle"
-  // regression.
+  // Windows toggle_window handler now actually hides/shows the native window
+  // (see shortcuts.rs). We just mirror the native visibility into React so the
+  // overlay root's `display:none` class tracks it, and we still scrub open
+  // popovers so their inline state is consistent when the window returns.
   useEffect(() => {
     const unlistenPromise = listen<boolean>(
       "toggle-window-visibility",
@@ -96,7 +85,7 @@ export const useApp = () => {
           return;
         }
         const isNowHidden = event.payload; // true = window just hidden
-        setIsHidden(!isNowHidden);
+        setIsHidden(isNowHidden);
 
         // Catch every popover (there are multiple in the tree — the response
         // panel and the nested chat history) — the old code only touched the

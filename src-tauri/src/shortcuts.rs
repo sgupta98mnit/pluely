@@ -110,9 +110,12 @@ pub fn handle_shortcut_action<R: Runtime>(app: &AppHandle<R>, action_id: &str) {
         "screenshot" => handle_screenshot_shortcut(app),
         "system_audio" => handle_system_audio_shortcut(app),
         custom_action => {
-            // Emit custom action event for frontend to handle
-            if let Some(window) = app.get_webview_window("main") {
-                if let Err(e) = window.emit(
+            // Emit custom action event for frontend to handle.
+            // `emit_to` (not `emit`) — `Emitter::emit` broadcasts to every
+            // webview, so the dashboard would also fire the action.
+            if app.get_webview_window("main").is_some() {
+                if let Err(e) = app.emit_to(
+                    "main",
                     "custom-shortcut-triggered",
                     json!({ "action": custom_action }),
                 ) {
@@ -290,12 +293,26 @@ fn handle_audio_shortcut<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Handle screenshot shortcut
+/// Handle screenshot shortcut. Route to whichever window is currently focused
+/// (dashboard chat page or overlay) so the screenshot lands in the surface the
+/// user is actually looking at; fall back to `main` if neither is focused.
 fn handle_screenshot_shortcut<R: Runtime>(app: &AppHandle<R>) {
-    if let Some(window) = app.get_webview_window("main") {
-        // Emit event to trigger screenshot - frontend will determine auto/manual mode
-        if let Err(e) = window.emit("trigger-screenshot", json!({})) {
-            eprintln!("Failed to emit screenshot event: {}", e);
+    let dashboard_focused = app
+        .get_webview_window("dashboard")
+        .and_then(|w| w.is_focused().ok())
+        .unwrap_or(false);
+
+    let target_label = if dashboard_focused { "dashboard" } else { "main" };
+
+    // `emit_to` rather than `emit`: a window's `emit` broadcasts to all
+    // webviews, which would defeat the focus-based routing above.
+    if app.get_webview_window(target_label).is_some() {
+        if let Err(e) = app.emit_to(target_label, "trigger-screenshot", json!({})) {
+            eprintln!("Failed to emit screenshot event to {}: {}", target_label, e);
+        }
+    } else if app.get_webview_window("main").is_some() {
+        if let Err(e) = app.emit_to("main", "trigger-screenshot", json!({})) {
+            eprintln!("Failed to emit screenshot event to main fallback: {}", e);
         }
     }
 }

@@ -4,7 +4,12 @@ import {
   SPEECH_TO_TEXT_PROVIDERS,
   STORAGE_KEYS,
 } from "@/config";
-import { getPlatform, safeLocalStorage, trackAppStart } from "@/lib";
+import {
+  getPlatform,
+  safeLocalStorage,
+  trackAppStart,
+  buildCombinedContextText,
+} from "@/lib";
 import { getShortcutsConfig } from "@/lib/storage";
 import {
   getCustomizableState,
@@ -75,6 +80,20 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     safeLocalStorage.getItem(STORAGE_KEYS.SYSTEM_PROMPT) ||
       DEFAULT_SYSTEM_PROMPT
   );
+
+  // Combined text extracted from the user's resume, additional documents,
+  // and freeform "additional context" — appended to the system prompt on
+  // every AI request. Loaded async since it comes from SQLite.
+  const [contextText, setContextText] = useState<string>("");
+
+  const refreshContextText = async () => {
+    try {
+      const combined = await buildCombinedContextText();
+      setContextText(combined);
+    } catch (error) {
+      console.error("Failed to build combined context text:", error);
+    }
+  };
 
   const [selectedAudioDevices, setSelectedAudioDevices] = useState<{
     input: { id: string; name: string };
@@ -368,6 +387,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     // Load data
     loadData();
     initializeApp();
+    refreshContextText();
   }, []);
 
   // Keep the overlay cursor in sync with the window's focus state. A custom or
@@ -513,6 +533,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         e.key === STORAGE_KEYS.SELECTED_AUDIO_DEVICES
       ) {
         loadData();
+      }
+
+      if (e.key === STORAGE_KEYS.ADDITIONAL_CONTEXT) {
+        refreshContextText();
       }
     };
     window.addEventListener("storage", handleStorageChange);
@@ -725,6 +749,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const value: IContextType = {
     systemPrompt,
     setSystemPrompt,
+    contextText,
+    refreshContextText,
     allAiProviders,
     customAiProviders,
     selectedAIProvider,

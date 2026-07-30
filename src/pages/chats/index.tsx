@@ -8,6 +8,18 @@ import { useNavigate } from "react-router-dom";
 const Dashboard = () => {
   const conversations = useHistory();
   const navigate = useNavigate();
+
+  // Full-text search: match the title OR any message's content, so you can
+  // find "what did they ask about X last week" - not just conversation titles.
+  const query = conversations.search?.toLowerCase().trim() || "";
+  const matchesSearch = (doc: {
+    title: string;
+    messages: { content: string }[];
+  }) =>
+    query.length === 0 ||
+    doc.title.toLowerCase().includes(query) ||
+    doc.messages.some((m) => m.content.toLowerCase().includes(query));
+
   // Group conversations by date
   const groupedConversations = conversations.conversations.reduce(
     (acc, doc) => {
@@ -53,13 +65,7 @@ const Dashboard = () => {
             </div>
             {sortedDates
               .filter((dateKey) =>
-                conversations?.search?.length === 0
-                  ? true
-                  : groupedConversations?.[dateKey]?.some((doc) =>
-                      doc?.title
-                        .toLowerCase()
-                        .includes(conversations?.search?.toLowerCase() || "")
-                    )
+                groupedConversations?.[dateKey]?.some(matchesSearch)
               )
               .map((dateKey) => (
                 <div key={dateKey} className="flex flex-col gap-3">
@@ -67,7 +73,7 @@ const Dashboard = () => {
                     {moment(dateKey).format("ddd, MMM D")}
                   </p>
                   <div className="grid grid-cols-1 gap-3">
-                    {groupedConversations[dateKey].map((doc) => (
+                    {groupedConversations[dateKey].filter(matchesSearch).map((doc) => (
                       <Card
                         key={doc.id}
                         className="shadow-none select-none p-4 gap-0 group relative transition-all !bg-black/5 dark:!bg-white/5 hover:!border-primary/50 cursor-pointer"

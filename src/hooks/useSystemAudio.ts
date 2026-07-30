@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { useWindowResize, useGlobalShortcuts } from ".";
+import { useWindowResize, useGlobalShortcuts, useMicContext } from ".";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/contexts";
@@ -32,7 +32,35 @@ export interface VadConfig {
   pre_speech_chunks: number;
   noise_gate_threshold: number;
   max_recording_duration_secs: number;
+  /** Live transcript preview while the speaker is still talking (extra STT calls). */
+  partial_transcripts: boolean;
+  /** Seconds between partial transcript updates. */
+  partial_interval_secs: number;
+  /** Auto-raise detection thresholds to the room's measured noise floor. */
+  auto_calibrate: boolean;
 }
+
+/** Frontend-only behavior settings for system-audio sessions. */
+export interface BehaviorSettings {
+  /**
+   * When a new speech segment arrives shortly after the previous answer, treat
+   * it as a continuation of the same question: drop the half answer, combine
+   * the transcripts, and re-ask once.
+   */
+  mergeContinuation: boolean;
+  /** Also transcribe the user's own mic as "[You]: ..." context messages. */
+  micContext: boolean;
+}
+
+const DEFAULT_BEHAVIOR: BehaviorSettings = {
+  mergeContinuation: true,
+  micContext: false,
+};
+
+const BEHAVIOR_STORAGE_KEY = "system_audio_behavior";
+
+/** A continuation must arrive within this window to merge with the last turn. */
+const MERGE_WINDOW_MS = 4000;
 
 // OPTIMIZED VAD defaults - matches backend exactly for perfect performance
 const DEFAULT_VAD_CONFIG: VadConfig = {
@@ -40,11 +68,14 @@ const DEFAULT_VAD_CONFIG: VadConfig = {
   hop_size: 1024,
   sensitivity_rms: 0.012, // Much less sensitive - only real speech
   peak_threshold: 0.035, // Higher threshold - filters clicks/noise
-  silence_chunks: 45, // ~1.0s of required silence
+  silence_chunks: 70, // ~1.5s of required silence - survives mid-question pauses
   min_speech_chunks: 7, // ~0.16s - captures short answers
-  pre_speech_chunks: 12, // ~0.27s - enough to catch word start
+  pre_speech_chunks: 18, // ~0.4s - wider pre-roll so soft/fast word starts aren't clipped
   noise_gate_threshold: 0.003, // Stronger noise filtering
   max_recording_duration_secs: 180, // 3 minutes default
+  partial_transcripts: false, // Off by default - each partial is an STT call
+  partial_interval_secs: 3,
+  auto_calibrate: true,
 };
 
 // Chat message interface (reusing from useCompletion)
@@ -99,6 +130,20 @@ export function useSystemAudio() {
   const [useSystemPrompt, setUseSystemPrompt] = useState<boolean>(true);
   const [contextContent, setContextContent] = useState<string>("");
 
+  // Live transcript preview (populated only when partial_transcripts is on)
+  const [partialTranscript, setPartialTranscript] = useState<string>("");
+
+  // Behavior settings (merge-on-continuation, mic context)
+  const [behavior, setBehavior] = useState<BehaviorSettings>(DEFAULT_BEHAVIOR);
+
+  const updateBehavior = useCallback((update: Partial<BehaviorSettings>) => {
+    setBehavior((prev) => {
+      const next = { ...prev, ...update };
+      safeLocalStorage.setItem(BEHAVIOR_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
   const {
     selectedSttProvider,
     allSttProviders,
@@ -106,6 +151,7 @@ export function useSystemAudio() {
     allAiProviders,
     systemPrompt,
     selectedAudioDevices,
+    contextText,
   } = useApp();
   const abortControllerRef = useRef<AbortController | null>(null);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -127,15 +173,40 @@ export function useSystemAudio() {
       }
     }
 
-    // Load VAD config
-    const savedVadConfig = safeLocalStorage.getItem("vad_config");
-    if (savedVadConfig) {
-      try {
-        const parsed = JSON.parse(savedVadConfig);
-        setVadConfig(parsed);
-      } catch (error) {
-        console.error("Failed to load VAD config:", error);
+    // Load VAD config. v2 key: v1's default silence hold (~1s) cut questions
+    // in half whenever the speaker paused to think, so migrate old saved
+    // configs up to a safe minimum once.
+    try {
+      const savedV2 = safeLocalStorage.getItem("vad_config_v2");
+      if (savedV2) {
+        // Spread over defaults so configs saved before new fields existed
+        // still get sensible values.
+        setVadConfig({ ...DEFAULT_VAD_CONFIG, ...JSON.parse(savedV2) });
+      } else {
+        const legacy = safeLocalStorage.getItem("vad_config");
+        if (legacy) {
+          const parsed = JSON.parse(legacy);
+          const migrated = {
+            ...DEFAULT_VAD_CONFIG,
+            ...parsed,
+            silence_chunks: Math.max(parsed.silence_chunks ?? 70, 60),
+          };
+          setVadConfig(migrated);
+          safeLocalStorage.setItem("vad_config_v2", JSON.stringify(migrated));
+        }
       }
+    } catch (error) {
+      console.error("Failed to load VAD config:", error);
+    }
+
+    // Load behavior settings
+    try {
+      const savedBehavior = safeLocalStorage.getItem(BEHAVIOR_STORAGE_KEY);
+      if (savedBehavior) {
+        setBehavior({ ...DEFAULT_BEHAVIOR, ...JSON.parse(savedBehavior) });
+      }
+    } catch (error) {
+      console.error("Failed to load behavior settings:", error);
     }
   }, []);
 
@@ -217,93 +288,245 @@ export function useSystemAudio() {
     };
   }, []);
 
-  // Handle single speech detection event (both VAD and continuous modes)
+  // Latest-value refs, so the speech listener can be registered exactly once.
+  // The old effect re-subscribed on every new message; speech segments
+  // arriving in the unlisten/relisten gap were silently dropped, which is one
+  // way only "half" of what was said produced an answer.
+  const capturingRef = useRef(capturing);
+  const conversationRef = useRef(conversation);
+  const vadConfigRef = useRef(vadConfig);
+  const behaviorRef = useRef(behavior);
+  const speechQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const handleSpeechSegmentRef = useRef<(b64: string) => Promise<void>>(
+    async () => {}
+  );
+  const handlePartialSegmentRef = useRef<(b64: string) => Promise<void>>(
+    async () => {}
+  );
+
+  // The last completed Q&A turn, so a quick follow-up segment can be merged
+  // into it (question split across a pause -> one combined re-ask).
+  const lastTurnRef = useRef<{
+    question: string;
+    userMsgId: string;
+    assistantMsgId: string;
+    completedAt: number;
+  } | null>(null);
+
+  // Partial-transcript bookkeeping: generation guard invalidates in-flight
+  // partials once the final segment lands; busy flag drops (rather than
+  // queues) partials while one is already transcribing.
+  const partialGenRef = useRef(0);
+  const partialBusyRef = useRef(false);
+
+  useEffect(() => {
+    capturingRef.current = capturing;
+  }, [capturing]);
+
+  useEffect(() => {
+    conversationRef.current = conversation;
+  }, [conversation]);
+
+  useEffect(() => {
+    vadConfigRef.current = vadConfig;
+  }, [vadConfig]);
+
+  useEffect(() => {
+    behaviorRef.current = behavior;
+  }, [behavior]);
+
+  // Reassigned after every render (effect with no dep array) so the queue
+  // always runs the freshest closure (current providers, prompts,
+  // conversation) - no stale state, and no TDZ issue with processWithAI
+  // which is declared further down.
+  useEffect(() => {
+    handleSpeechSegmentRef.current = handleSpeechSegment;
+    handlePartialSegmentRef.current = handlePartialSegment;
+  });
+
+  const base64ToWavBlob = (base64Audio: string): Blob => {
+    const binaryString = atob(base64Audio);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return new Blob([bytes], { type: "audio/wav" });
+  };
+
+  // Live transcript preview: transcribe the in-progress buffer. Latest-wins;
+  // results are discarded if a final segment has since arrived.
+  const handlePartialSegment = async (base64Audio: string) => {
+    if (partialBusyRef.current) return;
+    partialBusyRef.current = true;
+    const generation = partialGenRef.current;
+
+    try {
+      const usePluelyAPI = await shouldUsePluelyAPI();
+      const providerConfig = allSttProviders.find(
+        (p) => p.id === selectedSttProvider.provider
+      );
+      if (!providerConfig && !usePluelyAPI) return;
+
+      const text = await fetchSTT({
+        provider: providerConfig,
+        selectedProvider: selectedSttProvider,
+        audio: base64ToWavBlob(base64Audio),
+        contextHint: contextText,
+      });
+
+      if (
+        generation === partialGenRef.current &&
+        isMeaningfulTranscription(text)
+      ) {
+        setPartialTranscript(text);
+      }
+    } catch (err) {
+      // Preview is best-effort; the final segment will still be transcribed
+      console.warn("Partial transcription failed:", err);
+    } finally {
+      partialBusyRef.current = false;
+    }
+  };
+
+  const handleSpeechSegment = async (base64Audio: string) => {
+    // A final segment supersedes any preview of it
+    partialGenRef.current += 1;
+    setPartialTranscript("");
+
+    try {
+      const audioBlob = base64ToWavBlob(base64Audio);
+
+      const usePluelyAPI = await shouldUsePluelyAPI();
+      if (!selectedSttProvider.provider && !usePluelyAPI) {
+        setError("No speech provider selected.");
+        return;
+      }
+
+      const providerConfig = allSttProviders.find(
+        (p) => p.id === selectedSttProvider.provider
+      );
+
+      if (!providerConfig && !usePluelyAPI) {
+        setError("Speech provider config not found.");
+        return;
+      }
+
+      setIsProcessing(true);
+
+      // Add timeout wrapper for STT request (30 seconds)
+      const sttPromise = fetchSTT({
+        provider: providerConfig,
+        selectedProvider: selectedSttProvider,
+        audio: audioBlob,
+        contextHint: contextText,
+      });
+
+      const timeoutPromise = new Promise<string>((_, reject) => {
+        setTimeout(
+          () => reject(new Error("Speech transcription timed out (30s)")),
+          30000
+        );
+      });
+
+      try {
+        const transcription = await Promise.race([sttPromise, timeoutPromise]);
+
+        if (isMeaningfulTranscription(transcription)) {
+          setError("");
+
+          const effectiveSystemPrompt = useSystemPrompt
+            ? systemPrompt || DEFAULT_SYSTEM_PROMPT
+            : contextContent || DEFAULT_SYSTEM_PROMPT;
+
+          // Merge-on-continuation: if this segment landed right after the
+          // previous answer, the VAD most likely split one question at a
+          // pause. Drop the half-question's turn, combine the transcripts,
+          // and ask once - instead of answering two fragments separately.
+          const lastTurn = lastTurnRef.current;
+          const shouldMerge =
+            behaviorRef.current.mergeContinuation &&
+            !!lastTurn &&
+            Date.now() - lastTurn.completedAt < MERGE_WINDOW_MS;
+
+          let question = transcription;
+          let sourceMessages = conversationRef.current.messages;
+
+          if (shouldMerge && lastTurn) {
+            question = `${lastTurn.question} ${transcription}`;
+            sourceMessages = sourceMessages.filter(
+              (m) =>
+                m.id !== lastTurn.userMsgId && m.id !== lastTurn.assistantMsgId
+            );
+            setConversation((prev) => ({
+              ...prev,
+              messages: prev.messages.filter(
+                (m) =>
+                  m.id !== lastTurn.userMsgId &&
+                  m.id !== lastTurn.assistantMsgId
+              ),
+            }));
+            lastTurnRef.current = null;
+          }
+
+          setLastTranscription(question);
+
+          // Messages are stored newest-first; the AI expects chronological
+          // history, so reverse before sending.
+          const previousMessages = sourceMessages
+            .slice()
+            .reverse()
+            .map((msg) => ({ role: msg.role, content: msg.content }));
+
+          await processWithAI(question, effectiveSystemPrompt, previousMessages);
+        } else {
+          setError("Received empty transcription");
+        }
+      } catch (sttError: any) {
+        console.error("STT Error:", sttError);
+        setError(sttError.message || "Failed to transcribe audio");
+        setIsPopoverOpen(true);
+      }
+    } catch (err) {
+      setError("Failed to process speech");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Handle single speech detection event (both VAD and continuous modes).
+  // Registered ONCE for the hook's lifetime; segments are chained through a
+  // queue so a follow-up question waits for the previous one to finish
+  // instead of racing it (which interleaved answers and lost context).
   useEffect(() => {
     let speechUnlisten: (() => void) | undefined;
+    let partialUnlisten: (() => void) | undefined;
+    let cancelled = false;
 
     const setupEventListener = async () => {
       try {
-        speechUnlisten = await listen("speech-detected", async (event) => {
-          try {
-            if (!capturing) return;
-
-            const base64Audio = event.payload as string;
-            // Convert to blob
-            const binaryString = atob(base64Audio);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-              bytes[i] = binaryString.charCodeAt(i);
-            }
-            const audioBlob = new Blob([bytes], { type: "audio/wav" });
-
-            const usePluelyAPI = await shouldUsePluelyAPI();
-            if (!selectedSttProvider.provider && !usePluelyAPI) {
-              setError("No speech provider selected.");
-              return;
-            }
-
-            const providerConfig = allSttProviders.find(
-              (p) => p.id === selectedSttProvider.provider
-            );
-
-            if (!providerConfig && !usePluelyAPI) {
-              setError("Speech provider config not found.");
-              return;
-            }
-
-            setIsProcessing(true);
-
-            // Add timeout wrapper for STT request (30 seconds)
-            const sttPromise = fetchSTT({
-              provider: providerConfig,
-              selectedProvider: selectedSttProvider,
-              audio: audioBlob,
-            });
-
-            const timeoutPromise = new Promise<string>((_, reject) => {
-              setTimeout(
-                () => reject(new Error("Speech transcription timed out (30s)")),
-                30000
-              );
-            });
-
-            try {
-              const transcription = await Promise.race([
-                sttPromise,
-                timeoutPromise,
-              ]);
-
-              if (isMeaningfulTranscription(transcription)) {
-                setLastTranscription(transcription);
-                setError("");
-
-                const effectiveSystemPrompt = useSystemPrompt
-                  ? systemPrompt || DEFAULT_SYSTEM_PROMPT
-                  : contextContent || DEFAULT_SYSTEM_PROMPT;
-
-                const previousMessages = conversation.messages.map((msg) => {
-                  return { role: msg.role, content: msg.content };
-                });
-
-                await processWithAI(
-                  transcription,
-                  effectiveSystemPrompt,
-                  previousMessages
-                );
-              } else {
-                setError("Received empty transcription");
-              }
-            } catch (sttError: any) {
-              console.error("STT Error:", sttError);
-              setError(sttError.message || "Failed to transcribe audio");
-              setIsPopoverOpen(true);
-            }
-          } catch (err) {
-            setError("Failed to process speech");
-          } finally {
-            setIsProcessing(false);
-          }
+        const unlisten = await listen("speech-detected", (event) => {
+          if (!capturingRef.current) return;
+          const base64Audio = event.payload as string;
+          speechQueueRef.current = speechQueueRef.current
+            .then(() => handleSpeechSegmentRef.current(base64Audio))
+            .catch(() => {});
         });
+
+        // Partial buffers bypass the queue - they're transient previews, not
+        // turns, and must never delay or reorder real segments.
+        const unlistenPartial = await listen("speech-partial", (event) => {
+          if (!capturingRef.current) return;
+          if (!vadConfigRef.current.partial_transcripts) return;
+          void handlePartialSegmentRef.current(event.payload as string);
+        });
+
+        if (cancelled) {
+          unlisten();
+          unlistenPartial();
+        } else {
+          speechUnlisten = unlisten;
+          partialUnlisten = unlistenPartial;
+        }
       } catch (err) {
         setError("Failed to setup speech listener");
       }
@@ -312,14 +535,34 @@ export function useSystemAudio() {
     setupEventListener();
 
     return () => {
+      cancelled = true;
       if (speechUnlisten) speechUnlisten();
+      if (partialUnlisten) partialUnlisten();
     };
-  }, [
-    capturing,
-    selectedSttProvider,
-    allSttProviders,
-    conversation.messages.length,
-  ]);
+  }, []);
+
+  // Mic context channel: transcribe the user's own voice (opt-in) and add it
+  // as context messages. Never triggers an AI answer by itself, but gives the
+  // model both sides of the conversation for follow-up questions.
+  useMicContext({
+    active: capturing && behavior.micContext,
+    onTranscript: useCallback((text: string) => {
+      const timestamp = Date.now();
+      setConversation((prev) => ({
+        ...prev,
+        messages: [
+          {
+            id: generateMessageId("user", timestamp),
+            role: "user" as const,
+            content: `[You]: ${text}`,
+            timestamp,
+          },
+          ...prev.messages,
+        ],
+        updatedAt: prev.updatedAt || timestamp,
+      }));
+    }, []),
+  });
 
   // Context management functions
   const saveContextSettings = useCallback(
@@ -395,8 +638,10 @@ export function useSystemAudio() {
       ? systemPrompt || DEFAULT_SYSTEM_PROMPT
       : contextContent || DEFAULT_SYSTEM_PROMPT;
 
-    // Include the most recent transcription in conversation history if it exists
-    let updatedMessages = [...conversation.messages];
+    // Include the most recent transcription in conversation history if it
+    // exists. Messages are stored newest-first; the AI expects chronological
+    // order, so reverse before appending the latest transcription.
+    let updatedMessages = [...conversation.messages].reverse();
 
     if (lastTranscription && lastTranscription.trim()) {
       const lastMessage = updatedMessages[updatedMessages.length - 1];
@@ -523,17 +768,20 @@ export function useSystemAudio() {
 
         if (fullResponse) {
           const timestamp = Date.now();
+          const userMsgId = generateMessageId("user", timestamp);
+          const assistantMsgId = generateMessageId("assistant", timestamp + 1);
+
           setConversation((prev) => ({
             ...prev,
             messages: [
               {
-                id: generateMessageId("user", timestamp),
+                id: userMsgId,
                 role: "user" as const,
                 content: transcription,
                 timestamp,
               },
               {
-                id: generateMessageId("assistant", timestamp + 1),
+                id: assistantMsgId,
                 role: "assistant" as const,
                 content: fullResponse,
                 timestamp: timestamp + 1,
@@ -543,6 +791,15 @@ export function useSystemAudio() {
             updatedAt: timestamp,
             title: prev.title || generateConversationTitle(transcription),
           }));
+
+          // Remember this turn so an immediate follow-up segment can merge
+          // into it (see handleSpeechSegment).
+          lastTurnRef.current = {
+            question: transcription,
+            userMsgId,
+            assistantMsgId,
+            completedAt: timestamp,
+          };
         }
       } catch (err) {
         setError("Failed to get AI response");
@@ -581,6 +838,9 @@ export function useSystemAudio() {
       setIsPopoverOpen(true);
       setIsContinuousMode(isContinuous);
       setRecordingProgress(0);
+      lastTurnRef.current = null;
+      partialGenRef.current += 1;
+      setPartialTranscript("");
 
       // If continuous mode
       if (isContinuous) {
@@ -631,6 +891,9 @@ export function useSystemAudio() {
       setLastAIResponse("");
       setError("");
       setIsPopoverOpen(false);
+      lastTurnRef.current = null;
+      partialGenRef.current += 1;
+      setPartialTranscript("");
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       setError(`Failed to stop capture: ${errorMessage}`);
@@ -783,13 +1046,16 @@ export function useSystemAudio() {
     setIsAIProcessing(false);
     setIsPopoverOpen(false);
     setUseSystemPrompt(true);
+    lastTurnRef.current = null;
+    partialGenRef.current += 1;
+    setPartialTranscript("");
   }, []);
 
   // Update VAD configuration
   const updateVadConfiguration = useCallback(async (config: VadConfig) => {
     try {
       setVadConfig(config);
-      safeLocalStorage.setItem("vad_config", JSON.stringify(config));
+      safeLocalStorage.setItem("vad_config_v2", JSON.stringify(config));
       await invoke("update_vad_config", { config });
     } catch (error) {
       console.error("Failed to update VAD config:", error);
@@ -810,6 +1076,8 @@ export function useSystemAudio() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!isPopoverOpen) return;
+      // Alt/Cmd/Ctrl + arrows are reserved for question navigation
+      if (e.altKey || e.metaKey || e.ctrlKey) return;
 
       const scrollElement = scrollAreaRef.current?.querySelector(
         "[data-radix-scroll-area-viewport]"
@@ -919,6 +1187,11 @@ export function useSystemAudio() {
     // VAD configuration
     vadConfig,
     updateVadConfiguration,
+    // Live transcript preview
+    partialTranscript,
+    // Behavior settings (merge-on-continuation, mic context)
+    behavior,
+    updateBehavior,
     // Continuous recording
     isContinuousMode,
     isRecordingInContinuousMode,

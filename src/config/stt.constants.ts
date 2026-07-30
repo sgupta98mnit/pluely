@@ -52,14 +52,19 @@ export const SPEECH_TO_TEXT_PROVIDERS = [
   {
     id: "google-stt",
     name: "Google Speech-to-Text",
+    // Audio is sent as a WAV file whose header already carries the real
+    // sample rate (varies by device/mic, typically 44.1/48kHz). Google
+    // requires "encoding" to be set for WAV/FLAC uploads, but must NOT be
+    // given a hardcoded "sampleRateHertz" alongside it — that used to force
+    // 16000Hz regardless of the file's actual rate, which corrupted playback
+    // speed/pitch server-side and produced garbled transcriptions.
     curl: `curl -X POST "https://speech.googleapis.com/v1/speech:recognize" \\
       -H "Authorization: Bearer {{API_KEY}}" \\
       -H "Content-Type: application/json" \\
       -H "x-goog-user-project: {{PROJECT_ID}}" \\
       -d '{
         "config": {
-          "encoding": "LINEAR16", 
-          "sampleRateHertz": 16000,
+          "encoding": "LINEAR16",
           "languageCode": "en-US"
         },
         "audio": {
@@ -89,26 +94,11 @@ export const SPEECH_TO_TEXT_PROVIDERS = [
     responseContentPath: "DisplayText",
     streaming: false,
   },
-  {
-    id: "speechmatics-stt",
-    name: "Speechmatics",
-    curl: `curl -X POST "https://asr.api.speechmatics.com/v2/jobs" \\
-      -H "Authorization: Bearer {{API_KEY}}" \\
-      -F "data_file={{AUDIO}}" \\
-      -F 'config={"type": "transcription", "transcription_config": {"language": "en"}}'`,
-    responseContentPath: "job.id",
-    streaming: false,
-  },
-  {
-    id: "rev-ai-stt",
-    name: "Rev.ai Speech-to-Text",
-    curl: `curl -X POST "https://api.rev.ai/speechtotext/v1/jobs" \\
-      -H "Authorization: Bearer {{API_KEY}}" \\
-      -F "media={{AUDIO}}" \\
-      -F "options={{OPTIONS}}"`,
-    responseContentPath: "id",
-    streaming: false,
-  },
+  // Speechmatics and Rev.ai are intentionally not offered as built-in options:
+  // both APIs are async job-submission endpoints (they return a job ID, not a
+  // transcript) and require a separate polling step this app doesn't
+  // implement. Wiring them up as-is silently returns the job ID as if it were
+  // the spoken text. Add them back once polling is implemented.
   {
     id: "ibm-watson-stt",
     name: "IBM Watson Speech-to-Text",

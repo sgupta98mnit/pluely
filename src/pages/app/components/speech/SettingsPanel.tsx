@@ -20,7 +20,7 @@ import {
   RotateCcwIcon,
   ChevronUpIcon,
 } from "lucide-react";
-import { VadConfig } from "@/hooks/useSystemAudio";
+import { BehaviorSettings, VadConfig } from "@/hooks/useSystemAudio";
 import {
   PROMPT_TEMPLATES,
   getPromptTemplateById,
@@ -60,6 +60,9 @@ interface SettingsPanelProps {
   setUseSystemPrompt: (value: boolean) => void;
   contextContent: string;
   setContextContent: (content: string) => void;
+  // Behavior settings
+  behavior: BehaviorSettings;
+  onUpdateBehavior: (update: Partial<BehaviorSettings>) => void;
 }
 
 export const SettingsPanel = ({
@@ -69,6 +72,8 @@ export const SettingsPanel = ({
   setUseSystemPrompt,
   contextContent,
   setContextContent,
+  behavior,
+  onUpdateBehavior,
 }: SettingsPanelProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -113,11 +118,14 @@ export const SettingsPanel = ({
       hop_size: 1024,
       sensitivity_rms: 0.012,
       peak_threshold: 0.035,
-      silence_chunks: 45,
+      silence_chunks: 70,
       min_speech_chunks: 7,
-      pre_speech_chunks: 12,
+      pre_speech_chunks: 18,
       noise_gate_threshold: 0.003,
       max_recording_duration_secs: 180,
+      partial_transcripts: false,
+      partial_interval_secs: 3,
+      auto_calibrate: true,
     };
     onUpdateVadConfig(defaultConfig);
   };
@@ -209,6 +217,90 @@ export const SettingsPanel = ({
                   max={3}
                   step={0.5}
                   className="w-full"
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Listening Behavior Section */}
+          <div className="space-y-3 pt-3 border-t border-border/50">
+            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              Listening
+            </h4>
+
+            {vadConfig.enabled && (
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex-1">
+                  <Label className="text-xs font-medium">
+                    Live Transcription Preview
+                  </Label>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    Show what's being heard while they're still talking. Uses
+                    extra transcription calls.
+                  </p>
+                </div>
+                <Switch
+                  checked={vadConfig.partial_transcripts}
+                  onCheckedChange={(checked) =>
+                    onUpdateVadConfig({
+                      ...vadConfig,
+                      partial_transcripts: checked,
+                    })
+                  }
+                />
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex-1">
+                <Label className="text-xs font-medium">
+                  Merge Split Questions
+                </Label>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  If speech resumes right after an answer, combine it with the
+                  previous question and re-ask once.
+                </p>
+              </div>
+              <Switch
+                checked={behavior.mergeContinuation}
+                onCheckedChange={(checked) =>
+                  onUpdateBehavior({ mergeContinuation: checked })
+                }
+              />
+            </div>
+
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex-1">
+                <Label className="text-xs font-medium">Include My Voice</Label>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  Transcribe your microphone too, so the AI knows what you
+                  said. Context only - never triggers answers.
+                </p>
+              </div>
+              <Switch
+                checked={behavior.micContext}
+                onCheckedChange={(checked) =>
+                  onUpdateBehavior({ micContext: checked })
+                }
+              />
+            </div>
+
+            {vadConfig.enabled && (
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex-1">
+                  <Label className="text-xs font-medium">
+                    Auto-Calibrate to Room Noise
+                  </Label>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    Measure background noise at start and raise thresholds if
+                    the room is loud. Never lowers your settings.
+                  </p>
+                </div>
+                <Switch
+                  checked={vadConfig.auto_calibrate}
+                  onCheckedChange={(checked) =>
+                    onUpdateVadConfig({ ...vadConfig, auto_calibrate: checked })
+                  }
                 />
               </div>
             )}

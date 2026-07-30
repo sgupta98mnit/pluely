@@ -11,6 +11,14 @@ const isAnyPopoverOpen = (): boolean => {
   return popoverContents.length > 0;
 };
 
+// Last height we actually applied to the window, shared across every
+// useWindowResize instance. The MutationObserver below calls resizeWindow on
+// every DOM mutation; without this guard each call fires a Rust IPC + native
+// resize even when the height is unchanged, and the resulting relayout mutates
+// the DOM again — a feedback loop that flashes the Windows busy cursor every
+// few seconds. Skipping unchanged heights makes the redundant calls no-ops.
+let lastAppliedHeight: number | null = null;
+
 export const useWindowResize = () => {
   const resizeWindow = useCallback(async (expanded: boolean) => {
     try {
@@ -28,10 +36,17 @@ export const useWindowResize = () => {
 
       const newHeight = expanded ? 600 : 54;
 
+      // No-op if the window is already at this height - avoids the redundant
+      // resize IPC storm described above.
+      if (lastAppliedHeight === newHeight) {
+        return;
+      }
+
       await invoke("set_window_height", {
         window,
         height: newHeight,
       });
+      lastAppliedHeight = newHeight;
     } catch (error) {
       console.error("Failed to resize window:", error);
     }

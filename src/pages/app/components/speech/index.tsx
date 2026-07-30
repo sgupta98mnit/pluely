@@ -12,9 +12,12 @@ import {
   LoaderIcon,
   AudioLinesIcon,
   CameraIcon,
+  DownloadIcon,
+  EarIcon,
   PlusIcon,
   XIcon,
 } from "lucide-react";
+import { downloadConversationMarkdown } from "@/lib/functions";
 import { invoke } from "@tauri-apps/api/core";
 import { ModeSwitcher } from "./ModeSwitcher";
 import { RecordingPanel } from "./RecordingPanel";
@@ -57,6 +60,9 @@ export const SystemAudio = (props: useSystemAudioType) => {
     handleQuickActionClick,
     vadConfig,
     updateVadConfiguration,
+    partialTranscript,
+    behavior,
+    updateBehavior,
     isRecordingInContinuousMode,
     recordingProgress,
     manualStopAndSend,
@@ -67,31 +73,12 @@ export const SystemAudio = (props: useSystemAudioType) => {
 
   const { hasActiveLicense, supportsImages } = useApp();
 
-  // View mode toggle
-  const [conversationMode, setConversationMode] = useState(false);
-
   // Screenshot state
   const [screenshotImage, setScreenshotImage] = useState<string | null>(null);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
 
   const isVadMode = vadConfig.enabled;
   const hasResponse = lastAIResponse || isAIProcessing;
-
-  // Keyboard shortcut for Cmd+K to toggle view mode
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!isPopoverOpen) return;
-
-      // Cmd+K or Ctrl+K to toggle view mode
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        setConversationMode((prev) => !prev);
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isPopoverOpen]);
 
   // Reset screenshot when processing starts (message is being sent)
   useEffect(() => {
@@ -247,6 +234,20 @@ export const SystemAudio = (props: useSystemAudioType) => {
                     </Button>
                   )}
 
+                  {/* Export Session Button */}
+                  {!setupRequired && conversation.messages.length > 0 && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => downloadConversationMarkdown(conversation)}
+                      className="h-6 text-[10px] gap-1 px-2"
+                      title="Export this session as Markdown"
+                    >
+                      <DownloadIcon className="w-3 h-3" />
+                      Export
+                    </Button>
+                  )}
+
                   {/* New Conversation Button */}
                   {!setupRequired && (
                     <Button
@@ -347,14 +348,27 @@ export const SystemAudio = (props: useSystemAudioType) => {
                       onIgnore={ignoreContinuousRecording}
                     />
 
-                    {/* AI Response */}
+                    {/* Live transcript preview (partial transcripts on) */}
+                    {partialTranscript && (
+                      <div className="flex items-start gap-2 p-2.5 rounded-lg bg-primary/5 border border-primary/20">
+                        <EarIcon className="w-3.5 h-3.5 text-primary flex-shrink-0 mt-0.5 animate-pulse" />
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-medium text-primary">
+                            Hearing...
+                          </p>
+                          <p className="text-[11px] text-muted-foreground">
+                            {partialTranscript}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* AI Response + question navigator */}
                     <ResultsSection
                       lastTranscription={lastTranscription}
                       lastAIResponse={lastAIResponse}
                       isAIProcessing={isAIProcessing}
                       conversation={conversation}
-                      conversationMode={conversationMode}
-                      setConversationMode={setConversationMode}
                     />
 
                     {/* Settings Panel */}
@@ -365,6 +379,8 @@ export const SystemAudio = (props: useSystemAudioType) => {
                       setUseSystemPrompt={setUseSystemPrompt}
                       contextContent={contextContent}
                       setContextContent={setContextContent}
+                      behavior={behavior}
+                      onUpdateBehavior={updateBehavior}
                     />
 
                     {/* Help/Keyboard Shortcuts */}
